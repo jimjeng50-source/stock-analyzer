@@ -3,9 +3,26 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+
+def _get_secret(key: str, default: str = "") -> str:
+    """
+    讀取 API 金鑰，依序嘗試：
+      1. 環境變數 / .env 檔（本地開發、Docker、Render）
+      2. st.secrets（Streamlit Community Cloud）
+    """
+    val = os.getenv(key, "")
+    if val:
+        return val
+    try:
+        import streamlit as st
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+
+FINMIND_TOKEN = _get_secret("FINMIND_TOKEN")
+ANTHROPIC_API_KEY = _get_secret("ANTHROPIC_API_KEY")
+TELEGRAM_BOT_TOKEN = _get_secret("TELEGRAM_BOT_TOKEN")
 CLAUDE_MODEL = "claude-sonnet-4-6"
 
 # 預設取資料天數（股價、籌碼）
