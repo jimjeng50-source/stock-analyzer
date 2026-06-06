@@ -1,0 +1,11 @@
+streamlit>=1.28.0
+python-telegram-bot>=20.0
+plotly>=5.18.0
+pandas>=2.0.0
+numpy>=1.24.0
+ta>=0.11.0
+anthropic>=0.25.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+yfinance>=0.2.31
+FinMind>=0.7.0
