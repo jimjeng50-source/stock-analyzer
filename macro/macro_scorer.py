@@ -1,5 +1,5 @@
 """
-總體資金面評分：整合匯率、VIX、期貨、資金流向，
+總體資金面評分：整合匯率、VIX、期貨、資金流向、巴菲特指標，
 輸出 macro_score (0~1) 與個股評分乘數 (0.7~1.0)。
 """
 
@@ -7,10 +7,11 @@ import numpy as np
 
 
 _WEIGHTS = {
-    "fx_score":      0.25,
-    "vix_score":     0.25,
-    "futures_score": 0.30,
-    "flow_score":    0.20,
+    "fx_score":      0.20,
+    "vix_score":     0.20,
+    "futures_score": 0.25,
+    "flow_score":    0.15,
+    "buffett_score": 0.20,
 }
 
 
@@ -60,17 +61,21 @@ def calc_macro_score() -> dict:
     from macro.vix import compute_vix
     from macro.futures import compute_futures
     from macro.fund_flow import compute_fund_flow
+    from macro.buffett import compute_buffett
+    from config import FINMIND_TOKEN
 
     raw_fx = compute_fx()
     raw_vix = compute_vix()
     raw_futures = compute_futures()
     raw_flow = compute_fund_flow()
+    raw_buffett = compute_buffett(FINMIND_TOKEN)
 
     components = {
         "fx_score":      _fx_to_score(raw_fx),
         "vix_score":     raw_vix.get("vix_signal", 0.5),
         "futures_score": raw_futures.get("futures_score", 0.5),
         "flow_score":    raw_flow.get("flow_score", 0.5),
+        "buffett_score": raw_buffett.get("score", 0.5),
     }
 
     macro_score = round(
@@ -85,5 +90,10 @@ def calc_macro_score() -> dict:
         "components": components,
         "signal": _macro_signal(macro_score),
         "multiplier": multiplier,
-        "raw": {**raw_fx, **raw_vix, **raw_futures, **raw_flow},
+        "raw": {**raw_fx, **raw_vix, **raw_futures, **raw_flow,
+                "buffett_ratio": raw_buffett.get("ratio", 100.0),
+                "buffett_market_cap": raw_buffett.get("market_cap", 0),
+                "buffett_gdp": raw_buffett.get("gdp", 0),
+                "buffett_signal": raw_buffett.get("signal", ""),
+                },
     }
