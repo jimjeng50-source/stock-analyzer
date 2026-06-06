@@ -9,3 +9,8 @@ python-dotenv>=1.0.0
 requests>=2.31.0
 yfinance>=0.2.31
 FinMind>=0.7.0
+scipy>=1.11.0
+
+# testing
+pytest>=7.4.0
+pytest-mock>=3.11.0

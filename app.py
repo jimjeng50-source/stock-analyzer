@@ -72,7 +72,9 @@ with st.sidebar:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 頁籤
 # ═══════════════════════════════════════════════════════════════════════════════
-tab1, tab2, tab3, tab4 = st.tabs(["📊 個股分析", "🌐 總體資金面", "📈 回測驗證", "📚 因子說明"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📊 個股分析", "🌐 總體資金面", "📈 回測驗證", "📚 因子說明", "🛡️ 風險監控"
+])
 
 
 # ───────────────────────────────────────────────────────────────────────────────
@@ -221,6 +223,94 @@ with tab1:
             rows = [{"因子": k, "數值": f"{v:,.2f}" if isinstance(v, float) else v}
                     for k, v in sorted(raw.items())]
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        # ── 個股法人異常警示 ──────────────────────────────────────────────
+        if not institutional_df.empty:
+            st.markdown("---")
+            st.subheader("🚨 三大法人異常警示（個股）")
+            from macro.institutional_alert import per_stock_alerts
+            stock_alerts = per_stock_alerts(institutional_df, stock_id)
+            if stock_alerts:
+                for alr in stock_alerts:
+                    level = alr.get("level", "⚪")
+                    bg = {"🔴": "#2d1010", "🟢": "#0d2d1a", "🟠": "#2d1b00"}.get(level, "#1a1a2e")
+                    border = {"🔴": "#ff4b4b", "🟢": "#00c087", "🟠": "#ff9f43"}.get(level, "#888")
+                    st.markdown(
+                        f'<div style="background:{bg};border-left:4px solid {border};'
+                        f'padding:8px 14px;border-radius:6px;margin:4px 0">'
+                        f'{level} <b>{alr["type"]}</b>　{alr["msg"]}</div>',
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.success("✅ 未偵測到法人異常行為")
+
+        # ── 風險相關係數分析 ──────────────────────────────────────────────
+        if not price_df.empty:
+            st.markdown("---")
+            with st.expander("📉 歷史跌幅 ≥5% 風險相關分析", expanded=False):
+                with st.spinner("計算歷史風險相關係數..."):
+                    try:
+                        from utils.risk_correlation import compute_risk_correlations
+                        lookback = min(len(price_df) - 1, 365)
+                        risk_res = compute_risk_correlations(
+                            price_df,
+                            institutional_df if not institutional_df.empty else None,
+                            drop_threshold=-5.0,
+                            lookback_days=lookback,
+                        )
+                        _risk_ok = True
+                    except Exception as e:
+                        st.warning(f"風險分析失敗：{e}")
+                        _risk_ok = False
+
+                if _risk_ok:
+                    if risk_res.get("message"):
+                        st.warning(risk_res["message"])
+                    else:
+                        dc, ad, md = risk_res["drop_count"], risk_res["avg_drop"], risk_res["max_drop"]
+                        rs, rl = risk_res["risk_score"], risk_res["risk_level"]
+                        rc1, rc2, rc3, rc4 = st.columns(4)
+                        rc1.metric("大跌次數（≥5%）", f"{dc} 次")
+                        rc2.metric("平均跌幅", f"{ad:.1f}%")
+                        rc3.metric("最大單日跌幅", f"{md:.1f}%")
+                        rc4.metric("當前風險分數", f"{rs:.0f}/100", delta=rl)
+
+                        if risk_res["top_risk_factors"]:
+                            st.markdown("**⚠️ 統計相關係數最高的風險指標（當大跌發生時這些因子常見異常）**")
+                            risk_rows = [
+                                {
+                                    "風險指標": r["factor_label"],
+                                    "相關係數": f"{r['correlation']:.3f}",
+                                    "統計意義": r["interpretation"],
+                                }
+                                for r in risk_res["top_risk_factors"]
+                            ]
+                            st.dataframe(pd.DataFrame(risk_rows), use_container_width=True, hide_index=True)
+
+                        if risk_res["correlations"]:
+                            all_rows = [
+                                {
+                                    "指標": r["factor_label"],
+                                    "r": r["correlation"],
+                                    "解讀": r["interpretation"],
+                                }
+                                for r in risk_res["correlations"]
+                            ]
+                            corr_df = pd.DataFrame(all_rows)
+                            corr_colors = ["#ff4b4b" if v < -0.3 else "#ffd93d" if v < 0 else "#6bcb77"
+                                           for v in corr_df["r"]]
+                            fig_corr = go.Figure(go.Bar(
+                                x=corr_df["r"], y=corr_df["指標"], orientation="h",
+                                marker_color=corr_colors,
+                                text=[f"{v:.3f}" for v in corr_df["r"]], textposition="outside",
+                            ))
+                            fig_corr.update_layout(
+                                template="plotly_dark",
+                                title="各指標與當日跌幅的 Pearson 相關係數（負值=跌跌相關）",
+                                xaxis=dict(range=[-1.1, 1.1]),
+                                height=380, margin=dict(l=10, r=60, t=40, b=10),
+                            )
+                            st.plotly_chart(fig_corr, use_container_width=True)
 
         # ── AI 建議 ───────────────────────────────────────────────────────
         if use_ai:
@@ -417,6 +507,154 @@ with tab2:
                                       yaxis_title="點",
                                       height=300, margin=dict(l=10,r=10,t=40,b=10))
                 st.plotly_chart(fig_vix, use_container_width=True)
+
+        # ── 巴菲特指標 ────────────────────────────────────────────────────
+        st.markdown("---")
+        st.subheader("📐 台灣巴菲特指標")
+        st.caption("台股總市值 / 台灣 GDP（%）— 衡量股市相對經濟體量是否過度高估")
+        with st.spinner("計算巴菲特指標..."):
+            try:
+                from macro.buffett import compute_buffett
+                bf = compute_buffett(FINMIND_TOKEN)
+                _bf_ok = True
+            except Exception as e:
+                st.warning(f"巴菲特指標計算失敗：{e}")
+                _bf_ok = False
+
+        if _bf_ok:
+            bf1, bf2, bf3 = st.columns(3)
+            with bf1:
+                ratio = bf["ratio"]
+                color_hex = {"🟢": "#6bcb77", "🟡": "#ffd93d", "🟠": "#ff9f43", "🔴": "#ff4b4b"}.get(bf["color"], "#aaa")
+                st.markdown(
+                    f'<div style="text-align:center;background:#161b22;border-radius:10px;padding:18px">'
+                    f'<div style="font-size:2.8rem;font-weight:bold;color:{color_hex}">{ratio:.1f}%</div>'
+                    f'<div style="font-size:0.95rem;color:#aaa;margin-top:4px">市值 / GDP</div>'
+                    f'<div style="margin-top:8px;font-size:1rem;color:{color_hex}">{bf["signal"]}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            with bf2:
+                st.metric("台股總市值（估算）", f"{bf['market_cap']:.1f} 兆台幣")
+                st.metric("台灣 GDP", f"{bf['gdp']:.1f} 兆台幣")
+                st.metric("評分（0=貴,1=便宜）", f"{bf['score']:.2f}")
+            with bf3:
+                # 巴菲特指標進度條（0-200%）
+                gauge_val = min(ratio / 200, 1.0)
+                st.markdown("**估值水位**")
+                st.markdown(f"""
+<div style="background:#1e1e2e;border-radius:8px;height:24px;overflow:hidden">
+  <div style="background:{color_hex};width:{gauge_val*100:.0f}%;height:100%;transition:0.3s"></div>
+</div>
+<div style="display:flex;justify-content:space-between;font-size:0.75rem;color:#888;margin-top:2px">
+  <span>0%（極低估）</span><span>100%（合理）</span><span>200%（嚴重高估）</span>
+</div>""", unsafe_allow_html=True)
+                st.caption(f"📚 {bf['historical_context']}")
+
+            # 指標對照表
+            with st.expander("📊 巴菲特指標判讀標準", expanded=False):
+                st.markdown("""
+| 指標比率 | 判斷 | 巴菲特原話 |
+|---------|------|-----------|
+| < 80% | 🟢 大幅低估，長線做多機會 | "股市非常便宜" |
+| 80~100% | 🟡 小幅低估，中性偏多 | "合理估值偏低" |
+| 100~120% | 🟡 合理區間 | "公平價值附近" |
+| 120~150% | 🟠 偏高估，降低持倉 | "開始令人擔憂" |
+| > 150% | 🔴 嚴重高估，極度謹慎 | "在玩火！" |
+
+> 巴菲特曾說：「如果你需要判斷市場估值的單一最佳指標，那可能就是這個比率。」
+> 台灣股市因外資占比高、出口導向，指標值通常比美國偏低。
+""")
+
+        # ── 三大法人五日多空指標 ──────────────────────────────────────────
+        st.markdown("---")
+        st.subheader("🏦 三大法人五日多空指標")
+        st.caption("以代理股票加總模擬全市場外資、投信、自營商流向（需 FinMind Token）")
+
+        if not FINMIND_TOKEN:
+            st.info("📌 設定 FinMind Token 後可顯示三大法人市場指標")
+        else:
+            with st.spinner("載入三大法人五日指標..."):
+                try:
+                    from macro.institutional_alert import compute_institutional_signals
+                    inst_sig = compute_institutional_signals()
+                    _inst_ok = inst_sig.get("available", False)
+                except Exception as e:
+                    st.warning(f"法人指標載入失敗：{e}")
+                    _inst_ok = False
+
+            if _inst_ok:
+                combined = inst_sig["combined_signal"]
+                combined_color = {"多頭": "#6bcb77", "空頭": "#ff4b4b", "分歧": "#ffd93d"}.get(combined, "#aaa")
+                st.markdown(
+                    f'<div style="background:#161b22;border-radius:8px;padding:8px 16px;'
+                    f'display:inline-block;margin-bottom:12px">'
+                    f'三大法人綜合方向：<b style="color:{combined_color};font-size:1.1rem">{combined}</b></div>',
+                    unsafe_allow_html=True,
+                )
+
+                # 三欄：外資 / 投信 / 自營商
+                ic1, ic2, ic3 = st.columns(3)
+                for col, key, label in [(ic1, "fi", "外資"), (ic2, "it", "投信"), (ic3, "dealer", "自營商")]:
+                    stats = inst_sig[key]
+                    d = stats["direction"]
+                    d_color = "#6bcb77" if d == "多" else ("#ff4b4b" if d == "空" else "#aaa")
+                    net5  = stats["5d_net"]
+                    net20 = stats["20d_net"]
+                    cons  = stats["consecutive"]
+                    z     = stats["z_score"]
+                    with col:
+                        st.markdown(
+                            f'<div class="macro-card">'
+                            f'<div style="font-size:1.1rem;font-weight:bold">{label}</div>'
+                            f'<div style="color:{d_color};font-size:1.4rem;font-weight:bold">{d}方</div>'
+                            f'<table style="width:100%;font-size:0.85rem;margin-top:6px">'
+                            f'<tr><td style="color:#888">5日淨額</td><td style="text-align:right">'
+                            f'<b style="color:{"#6bcb77" if net5>=0 else "#ff4b4b"}">{net5:+,}</b> 張</td></tr>'
+                            f'<tr><td style="color:#888">20日淨額</td><td style="text-align:right">'
+                            f'<b style="color:{"#6bcb77" if net20>=0 else "#ff4b4b"}">{net20:+,}</b> 張</td></tr>'
+                            f'<tr><td style="color:#888">連續天數</td><td style="text-align:right">'
+                            f'{"買超" if cons>0 else "賣超"} <b>{abs(cons)}</b> 天</td></tr>'
+                            f'<tr><td style="color:#888">Z 分數</td><td style="text-align:right">'
+                            f'<b style="color:{"#6bcb77" if z>1 else "#ff4b4b" if z<-1 else "#ffd93d"}">'
+                            f'{z:+.1f}σ</b></td></tr>'
+                            f'</table></div>',
+                            unsafe_allow_html=True,
+                        )
+
+                # 異常警示
+                alerts = inst_sig.get("alerts", [])
+                if alerts:
+                    st.markdown("#### 🚨 異常警示")
+                    for alr in alerts:
+                        level = alr.get("level", "⚪")
+                        bg = {"🔴": "#2d1010", "🟢": "#0d2d1a", "🟠": "#2d1b00"}.get(level, "#1a1a2e")
+                        border = {"🔴": "#ff4b4b", "🟢": "#00c087", "🟠": "#ff9f43"}.get(level, "#888")
+                        st.markdown(
+                            f'<div style="background:{bg};border-left:4px solid {border};'
+                            f'padding:8px 14px;border-radius:6px;margin:4px 0">'
+                            f'{level} <b>{alr["type"]}</b>（{alr["name"]}）　{alr["msg"]}</div>',
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.success("✅ 近期無法人異常警示")
+
+                # 歷史趨勢圖（外資5日累計）
+                series_data = inst_sig.get("series", {})
+                fi_series = series_data.get("fi", pd.Series(dtype=float))
+                if not fi_series.empty and len(fi_series) >= 5:
+                    st.markdown("---")
+                    fig_fi = go.Figure()
+                    colors_fi = ["#00c087" if v >= 0 else "#ff4b4b" for v in fi_series.values]
+                    fig_fi.add_trace(go.Bar(x=fi_series.index, y=fi_series.values,
+                                            marker_color=colors_fi, name="外資每日淨買賣超"))
+                    fi_roll5 = fi_series.rolling(5, min_periods=1).sum()
+                    fig_fi.add_trace(go.Scatter(x=fi_roll5.index, y=fi_roll5.values,
+                                                name="5日累計", line=dict(color="#ffd93d", width=2)))
+                    fig_fi.update_layout(template="plotly_dark",
+                                         title="外資（代理股票）每日買賣超 vs 5日累計",
+                                         height=280, margin=dict(l=10, r=10, t=40, b=10))
+                    st.plotly_chart(fig_fi, use_container_width=True)
 
 
 # ───────────────────────────────────────────────────────────────────────────────
@@ -832,3 +1070,179 @@ with tab4:
 | **固定映射** | VIX分段評分 | 依區間直接對應分數 |
 """)
     st.caption("💡 設計目標：讓每個因子的量綱統一，避免數值較大的因子主導評分結果。")
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Tab 5：風險監控
+# ───────────────────────────────────────────────────────────────────────────────
+with tab5:
+    st.subheader("🛡️ 市場風險監控儀表板")
+    st.caption(f"更新時間：{datetime.today().strftime('%Y-%m-%d %H:%M')}")
+
+    # ── 巴菲特指標 ────────────────────────────────────────────────
+    st.markdown("### 📐 台灣巴菲特指標（大盤估值）")
+    with st.spinner("載入巴菲特指標..."):
+        try:
+            from macro.buffett import compute_buffett
+            bf5 = compute_buffett(FINMIND_TOKEN)
+            _bf5_ok = True
+        except Exception as e:
+            st.warning(f"巴菲特指標失敗：{e}")
+            _bf5_ok = False
+
+    if _bf5_ok:
+        bfa, bfb, bfc = st.columns(3)
+        ratio5 = bf5["ratio"]
+        color5_hex = {"🟢": "#6bcb77", "🟡": "#ffd93d", "🟠": "#ff9f43", "🔴": "#ff4b4b"}.get(bf5["color"], "#aaa")
+        with bfa:
+            st.markdown(
+                f'<div style="text-align:center;background:#161b22;border-radius:10px;padding:18px">'
+                f'<div style="font-size:2.8rem;font-weight:bold;color:{color5_hex}">{ratio5:.1f}%</div>'
+                f'<div style="color:#aaa;margin-top:4px">市值/GDP</div>'
+                f'<div style="margin-top:8px;color:{color5_hex}">{bf5["signal"]}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        with bfb:
+            st.metric("台股總市值（估算）", f"{bf5['market_cap']:.1f} 兆台幣")
+            st.metric("台灣 GDP",           f"{bf5['gdp']:.1f} 兆台幣")
+        with bfc:
+            st.metric("巴菲特評分（0=貴, 1=便宜）", f"{bf5['score']:.2f}")
+            st.caption(bf5["historical_context"])
+
+    # ── 三大法人市場警示 ──────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🏦 三大法人五日多空指標與警示")
+
+    if not FINMIND_TOKEN:
+        st.info("📌 設定 FinMind Token 後可顯示三大法人市場指標")
+    else:
+        with st.spinner("載入三大法人數據..."):
+            try:
+                from macro.institutional_alert import compute_institutional_signals
+                inst5 = compute_institutional_signals()
+                _inst5_ok = inst5.get("available", False)
+            except Exception as e:
+                st.warning(f"法人指標失敗：{e}")
+                _inst5_ok = False
+
+        if _inst5_ok:
+            combined5 = inst5["combined_signal"]
+            c5_color = {"多頭": "#6bcb77", "空頭": "#ff4b4b", "分歧": "#ffd93d"}.get(combined5, "#aaa")
+            st.markdown(
+                f'<div style="background:#161b22;border-radius:8px;padding:10px 16px;'
+                f'margin-bottom:12px;display:inline-block">'
+                f'三大法人綜合方向：<b style="color:{c5_color};font-size:1.2rem">{combined5}</b></div>',
+                unsafe_allow_html=True,
+            )
+            t5c1, t5c2, t5c3 = st.columns(3)
+            for col5, key5, lbl5 in [(t5c1, "fi", "外資"), (t5c2, "it", "投信"), (t5c3, "dealer", "自營商")]:
+                s5 = inst5[key5]
+                d5 = s5["direction"]
+                dc5 = "#6bcb77" if d5 == "多" else ("#ff4b4b" if d5 == "空" else "#aaa")
+                with col5:
+                    st.markdown(
+                        f'<div class="macro-card">'
+                        f'<b>{lbl5}</b> <span style="color:{dc5};font-size:1.2rem">{d5}方</span><br>'
+                        f'5日淨額 <b style="color:{"#6bcb77" if s5["5d_net"]>=0 else "#ff4b4b"}">'
+                        f'{s5["5d_net"]:+,}</b> 張<br>'
+                        f'20日淨額 <b style="color:{"#6bcb77" if s5["20d_net"]>=0 else "#ff4b4b"}">'
+                        f'{s5["20d_net"]:+,}</b> 張<br>'
+                        f'連續 <b>{abs(s5["consecutive"])}</b> 天'
+                        f'{"買超" if s5["consecutive"]>0 else "賣超" if s5["consecutive"]<0 else "持平"}<br>'
+                        f'Z分數 <b style="color:{"#6bcb77" if s5["z_score"]>1 else "#ff4b4b" if s5["z_score"]<-1 else "#ffd93d"}">'
+                        f'{s5["z_score"]:+.1f}σ</b></div>',
+                        unsafe_allow_html=True,
+                    )
+
+            alerts5 = inst5.get("alerts", [])
+            if alerts5:
+                st.markdown("#### 🚨 即時異常警示")
+                for alr5 in alerts5:
+                    lv5 = alr5.get("level", "⚪")
+                    bg5 = {"🔴": "#2d1010", "🟢": "#0d2d1a", "🟠": "#2d1b00"}.get(lv5, "#1a1a2e")
+                    bd5 = {"🔴": "#ff4b4b", "🟢": "#00c087", "🟠": "#ff9f43"}.get(lv5, "#888")
+                    st.markdown(
+                        f'<div style="background:{bg5};border-left:4px solid {bd5};'
+                        f'padding:8px 14px;border-radius:6px;margin:4px 0">'
+                        f'{lv5} <b>{alr5["type"]}</b>（{alr5["name"]}）　{alr5["msg"]}</div>',
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.success("✅ 目前無三大法人異常警示")
+
+    # ── 全市場跌幅統計分析 ────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📉 大盤歷史跌幅風險相關分析")
+    st.caption("以台灣 50 ETF（0050）作為市場代理，分析歷史大跌的相關因子")
+
+    if st.button("🔍 執行大盤風險相關分析", key="mkt_risk_btn"):
+        with st.spinner("下載 0050 歷史資料並計算相關係數..."):
+            try:
+                from data.fetcher import FinMindFetcher
+                from utils.risk_correlation import compute_risk_correlations
+                _fetcher = FinMindFetcher("0050", days=365)
+                _mkt_price = _fetcher.get_price()
+                _mkt_inst  = _fetcher.get_institutional()
+                mkt_risk = compute_risk_correlations(
+                    _mkt_price, _mkt_inst, drop_threshold=-3.0, lookback_days=365
+                )
+                _mkt_ok = True
+            except Exception as e:
+                st.error(f"大盤風險分析失敗：{e}")
+                _mkt_ok = False
+
+        if _mkt_ok:
+            if mkt_risk.get("message"):
+                st.warning(mkt_risk["message"])
+            else:
+                rm1, rm2, rm3, rm4 = st.columns(4)
+                rm1.metric("大跌次數（≥3%）", f"{mkt_risk['drop_count']} 次")
+                rm2.metric("平均跌幅", f"{mkt_risk['avg_drop']:.1f}%")
+                rm3.metric("最大單日跌幅", f"{mkt_risk['max_drop']:.1f}%")
+                rm4.metric("當前風險分數", f"{mkt_risk['risk_score']:.0f}/100",
+                            delta=mkt_risk["risk_level"])
+
+                if mkt_risk["top_risk_factors"]:
+                    st.markdown("**⚠️ 歷史大跌時最相關的風險因子（統計識別）**")
+                    risk_tbl = [
+                        {
+                            "風險指標": r["factor_label"],
+                            "相關係數": f"{r['correlation']:.3f}",
+                            "統計意義": r["interpretation"],
+                        }
+                        for r in mkt_risk["top_risk_factors"]
+                    ]
+                    st.dataframe(pd.DataFrame(risk_tbl), use_container_width=True, hide_index=True)
+
+                if mkt_risk["correlations"]:
+                    mkt_corr_df = pd.DataFrame([
+                        {"指標": r["factor_label"], "r": r["correlation"]}
+                        for r in mkt_risk["correlations"]
+                    ])
+                    mkt_colors = ["#ff4b4b" if v < -0.3 else "#ffd93d" if v < 0 else "#6bcb77"
+                                  for v in mkt_corr_df["r"]]
+                    fig_mkt = go.Figure(go.Bar(
+                        x=mkt_corr_df["r"], y=mkt_corr_df["指標"], orientation="h",
+                        marker_color=mkt_colors,
+                        text=[f"{v:.3f}" for v in mkt_corr_df["r"]], textposition="outside",
+                    ))
+                    fig_mkt.update_layout(
+                        template="plotly_dark",
+                        title="0050 各指標與單日跌幅的相關係數（負值代表跌跌相關，為風險因子）",
+                        xaxis=dict(range=[-1.1, 1.1]),
+                        height=400, margin=dict(l=10, r=60, t=40, b=10),
+                    )
+                    st.plotly_chart(fig_mkt, use_container_width=True)
+
+                # 大跌事件列表
+                with st.expander("📋 歷史大跌事件明細", expanded=False):
+                    evts = mkt_risk["drop_events"]
+                    if evts:
+                        ev_df = pd.DataFrame(evts)
+                        ev_df.columns = ["日期", "跌幅(%)"]
+                        ev_df["跌幅(%)"] = ev_df["跌幅(%)"].round(2)
+                        ev_df = ev_df.sort_values("跌幅(%)")
+                        st.dataframe(ev_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("👆 點擊按鈕載入大盤歷史風險相關分析")
