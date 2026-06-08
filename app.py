@@ -434,9 +434,19 @@ with tab2:
 
         if not fx_s.empty and not vix_s.empty:
             trend_rows = []
-            # 取共同有資料的最近3天
+            today = datetime.today().date()
             for i, (fx_d, fx_v) in enumerate(reversed(list(fx_s.tail(3).items()))):
-                day_lbl = ["今日", "昨日", "前日"][i]
+                # 依實際日期決定標籤，而非假設最新筆就是「今日」
+                data_date = fx_d.date() if hasattr(fx_d, "date") else fx_d
+                days_ago = (today - data_date).days
+                if days_ago == 0:
+                    day_lbl = "今日"
+                elif days_ago == 1:
+                    day_lbl = "昨日"
+                elif days_ago == 2:
+                    day_lbl = "前日"
+                else:
+                    day_lbl = f"{days_ago}天前"
                 vix_v_d = float(vix_s.iloc[-(i+1)]) if len(vix_s) > i else None
                 # 計算台幣升貶
                 if i < len(fx_s) - 1:
@@ -454,7 +464,10 @@ with tab2:
                     "外資現貨5日 (億)": f"{fi5d_b:+.1f}" if i == 0 else "—",
                 })
             st.dataframe(pd.DataFrame(trend_rows), use_container_width=True, hide_index=True)
-            st.caption("※ 期貨與資金流向資料當日更新一次，歷史日資料需付費方案")
+            latest_date = list(fx_s.tail(1).index)[0]
+            latest_days_ago = (today - latest_date.date()).days
+            lag_note = "" if latest_days_ago == 0 else f"（最新資料為 {latest_date.strftime('%m/%d')}，因週末或資料延遲，非今日）"
+            st.caption(f"※ 期貨與資金流向資料當日更新一次，歷史日資料需付費方案　{lag_note}")
         else:
             st.warning("無法取得近3日資料（yfinance 可能暫時無法連線）")
 
