@@ -19,9 +19,11 @@ import requests
 import numpy as np
 import pandas as pd
 import warnings
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 warnings.filterwarnings("ignore")
+
+from utils.tz import now_tw
 
 # ── 靜態台灣 GDP 備援（兆台幣，來源：行政院主計總處）──────────────
 _TAIWAN_GDP_TRILLION = {
@@ -45,8 +47,8 @@ def _fetch_twse_market_cap_trillion(token: str = "") -> float:
     # ── 方法 1：FinMind TaiwanStockPER ───────────────────────────
     if token:
         try:
-            end = datetime.today().strftime("%Y-%m-%d")
-            start = (datetime.today() - timedelta(days=14)).strftime("%Y-%m-%d")
+            end = now_tw().strftime("%Y-%m-%d")
+            start = (now_tw() - timedelta(days=14)).strftime("%Y-%m-%d")
             resp = requests.get(_FINMIND_API, params={
                 "dataset": "TaiwanStockPER",
                 "start_date": start,
@@ -106,7 +108,7 @@ def _get_taiwan_gdp_trillion() -> float:
         pass
 
     # 靜態備援
-    year = min(datetime.today().year, max(_TAIWAN_GDP_TRILLION.keys()))
+    year = min(now_tw().year, max(_TAIWAN_GDP_TRILLION.keys()))
     return _TAIWAN_GDP_TRILLION.get(year, 22.0)
 
 

@@ -3,9 +3,11 @@
 import pandas as pd
 import requests
 import warnings
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 warnings.filterwarnings("ignore")
+
+from utils.tz import now_tw
 
 from config import FINMIND_TOKEN
 
@@ -13,7 +15,7 @@ _FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 
 
 def _fm_get(dataset: str, data_id: str = "", days: int = 90) -> pd.DataFrame:
-    end = datetime.today()
+    end = now_tw()
     start = (end - timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         params = {

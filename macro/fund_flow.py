@@ -4,9 +4,11 @@ import pandas as pd
 import requests
 import numpy as np
 import warnings
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 warnings.filterwarnings("ignore")
+
+from utils.tz import now_tw
 
 from config import FINMIND_TOKEN
 
@@ -17,7 +19,7 @@ _PROXY_STOCKS = ["2330", "2454", "2317", "2382", "2308", "3711", "2303", "2881",
 
 
 def _fm_stock(stock_id: str, days: int = 30) -> pd.DataFrame:
-    end = datetime.today()
+    end = now_tw()
     start = (end - timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         resp = requests.get(_FINMIND_API, params={

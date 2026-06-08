@@ -4,6 +4,19 @@ import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+_TW_TZ = ZoneInfo("Asia/Taipei")
+
+
+def _now_tw() -> datetime:
+    """台灣當前時間（UTC+8）。"""
+    return datetime.now(_TW_TZ)
+
+
+def _today_tw():
+    """台灣今日日期。"""
+    return _now_tw().date()
 
 from data.fetcher import FinMindFetcher
 from factors import compute_chips, compute_technical, compute_fundamental, compute_momentum
@@ -54,8 +67,8 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("回測設定")
     bt_stock = st.text_input("回測標的", value="0050", max_chars=10).strip()
-    bt_start = st.date_input("開始日期", value=datetime.today() - timedelta(days=730))
-    bt_end   = st.date_input("結束日期", value=datetime.today())
+    bt_start = st.date_input("開始日期", value=_today_tw() - timedelta(days=730))
+    bt_end   = st.date_input("結束日期", value=_today_tw())
     bt_buy   = st.slider("買進閾值", 50, 90, 65, step=5)
     bt_sell  = st.slider("賣出閾值", 20, 60, 45, step=5)
     bt_macro = st.checkbox("加入總體資金面乘數", value=True)
@@ -334,7 +347,7 @@ with tab1:
 # ───────────────────────────────────────────────────────────────────────────────
 with tab2:
     st.subheader("🌐 總體資金面儀表板")
-    st.caption(f"更新時間：{datetime.today().strftime('%Y-%m-%d %H:%M')}")
+    st.caption(f"更新時間：{_now_tw().strftime('%Y-%m-%d %H:%M')} (台灣時間)")
 
     with st.spinner("載入總體資金面資料..."):
         try:
@@ -434,7 +447,7 @@ with tab2:
 
         if not fx_s.empty and not vix_s.empty:
             trend_rows = []
-            today = datetime.today().date()
+            today = _today_tw()
             for i, (fx_d, fx_v) in enumerate(reversed(list(fx_s.tail(3).items()))):
                 # 依實際日期決定標籤，而非假設最新筆就是「今日」
                 data_date = fx_d.date() if hasattr(fx_d, "date") else fx_d
@@ -1090,7 +1103,7 @@ with tab4:
 # ───────────────────────────────────────────────────────────────────────────────
 with tab5:
     st.subheader("🛡️ 市場風險監控儀表板")
-    st.caption(f"更新時間：{datetime.today().strftime('%Y-%m-%d %H:%M')}")
+    st.caption(f"更新時間：{_now_tw().strftime('%Y-%m-%d %H:%M')} (台灣時間)")
 
     # ── 巴菲特指標 ────────────────────────────────────────────────
     st.markdown("### 📐 台灣巴菲特指標（大盤估值）")

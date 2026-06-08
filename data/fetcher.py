@@ -12,6 +12,7 @@ except ImportError:
     _HAS_YFINANCE = False
 
 from config import FINMIND_TOKEN, DEFAULT_DAYS, FUNDAMENTAL_DAYS
+from utils.tz import now_tw
 
 _FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 
@@ -23,7 +24,7 @@ class FinMindFetcher:
         self.stock_id = stock_id
         self.days = days
         self.use_finmind = bool(FINMIND_TOKEN)
-        self._end = datetime.today()
+        self._end = now_tw()
         self._start_short = (self._end - timedelta(days=days)).strftime("%Y-%m-%d")
         self._start_long = (self._end - timedelta(days=FUNDAMENTAL_DAYS)).strftime("%Y-%m-%d")
         self._end_str = self._end.strftime("%Y-%m-%d")
