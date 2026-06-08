@@ -20,11 +20,12 @@ import pandas as pd
 import numpy as np
 import requests
 import warnings
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 warnings.filterwarnings("ignore")
 
 from config import FINMIND_TOKEN
+from utils.tz import now_tw
 
 _FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 
@@ -40,7 +41,7 @@ _CONSECUTIVE_ALERT_DAYS = 5
 
 
 def _fm_stock(stock_id: str, days: int = 45) -> pd.DataFrame:
-    end = datetime.today()
+    end = now_tw()
     start = (end - timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         resp = requests.get(_FINMIND_API, params={

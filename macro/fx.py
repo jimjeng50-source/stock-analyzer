@@ -3,9 +3,11 @@
 import numpy as np
 import pandas as pd
 import warnings
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 warnings.filterwarnings("ignore")
+
+from utils.tz import now_tw
 
 try:
     import yfinance as yf
@@ -17,7 +19,7 @@ except ImportError:
 def _get_usdtwd(days: int = 90) -> pd.Series:
     if not _HAS_YF:
         return pd.Series(dtype=float)
-    end = datetime.today()
+    end = now_tw()
     start = (end - timedelta(days=days + 10)).strftime("%Y-%m-%d")
     for ticker in ["TWD=X", "USDTWD=X"]:
         try:

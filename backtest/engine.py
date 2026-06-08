@@ -9,9 +9,11 @@
 import numpy as np
 import pandas as pd
 import warnings
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 warnings.filterwarnings("ignore")
+
+from utils.tz import now_tw
 
 BUY_FEE  = 0.001425   # 手續費
 SELL_FEE = 0.001425
@@ -328,7 +330,7 @@ def run_backtest(
     from backtest.metrics import calc_metrics
 
     if end_date is None:
-        end_date = datetime.today().strftime("%Y-%m-%d")
+        end_date = now_tw().strftime("%Y-%m-%d")
 
     # 取資料（預留 6 個月暖機期）
     days_needed = int((pd.to_datetime(end_date) - pd.to_datetime(start_date)).days) + 210

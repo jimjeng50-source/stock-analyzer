@@ -4,6 +4,19 @@ import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+_TW_TZ = ZoneInfo("Asia/Taipei")
+
+
+def _now_tw() -> datetime:
+    """台灣當前時間（UTC+8）。"""
+    return datetime.now(_TW_TZ)
+
+
+def _today_tw():
+    """台灣今日日期。"""
+    return _now_tw().date()
 
 from data.fetcher import FinMindFetcher
 from factors import compute_chips, compute_technical, compute_fundamental, compute_momentum
@@ -54,8 +67,8 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("回測設定")
     bt_stock = st.text_input("回測標的", value="0050", max_chars=10).strip()
-    bt_start = st.date_input("開始日期", value=datetime.today() - timedelta(days=730))
-    bt_end   = st.date_input("結束日期", value=datetime.today())
+    bt_start = st.date_input("開始日期", value=_today_tw() - timedelta(days=730))
+    bt_end   = st.date_input("結束日期", value=_today_tw())
     bt_buy   = st.slider("買進閾值", 50, 90, 65, step=5)
     bt_sell  = st.slider("賣出閾值", 20, 60, 45, step=5)
     bt_macro = st.checkbox("加入總體資金面乘數", value=True)
@@ -334,7 +347,7 @@ with tab1:
 # ───────────────────────────────────────────────────────────────────────────────
 with tab2:
     st.subheader("🌐 總體資金面儀表板")
-    st.caption(f"更新時間：{datetime.today().strftime('%Y-%m-%d %H:%M')}")
+    st.caption(f"更新時間：{_now_tw().strftime('%Y-%m-%d %H:%M')} (台灣時間)")
 
     with st.spinner("載入總體資金面資料..."):
         try:
@@ -434,9 +447,19 @@ with tab2:
 
         if not fx_s.empty and not vix_s.empty:
             trend_rows = []
-            # 取共同有資料的最近3天
+            today = _today_tw()
             for i, (fx_d, fx_v) in enumerate(reversed(list(fx_s.tail(3).items()))):
-                day_lbl = ["今日", "昨日", "前日"][i]
+                # 依實際日期決定標籤，而非假設最新筆就是「今日」
+                data_date = fx_d.date() if hasattr(fx_d, "date") else fx_d
+                days_ago = (today - data_date).days
+                if days_ago == 0:
+                    day_lbl = "今日"
+                elif days_ago == 1:
+                    day_lbl = "昨日"
+                elif days_ago == 2:
+                    day_lbl = "前日"
+                else:
+                    day_lbl = f"{days_ago}天前"
                 vix_v_d = float(vix_s.iloc[-(i+1)]) if len(vix_s) > i else None
                 # 計算台幣升貶
                 if i < len(fx_s) - 1:
@@ -454,7 +477,10 @@ with tab2:
                     "外資現貨5日 (億)": f"{fi5d_b:+.1f}" if i == 0 else "—",
                 })
             st.dataframe(pd.DataFrame(trend_rows), use_container_width=True, hide_index=True)
-            st.caption("※ 期貨與資金流向資料當日更新一次，歷史日資料需付費方案")
+            latest_date = list(fx_s.tail(1).index)[0]
+            latest_days_ago = (today - latest_date.date()).days
+            lag_note = "" if latest_days_ago == 0 else f"（最新資料為 {latest_date.strftime('%m/%d')}，因週末或資料延遲，非今日）"
+            st.caption(f"※ 期貨與資金流向資料當日更新一次，歷史日資料需付費方案　{lag_note}")
         else:
             st.warning("無法取得近3日資料（yfinance 可能暫時無法連線）")
 
@@ -1077,7 +1103,7 @@ with tab4:
 # ───────────────────────────────────────────────────────────────────────────────
 with tab5:
     st.subheader("🛡️ 市場風險監控儀表板")
-    st.caption(f"更新時間：{datetime.today().strftime('%Y-%m-%d %H:%M')}")
+    st.caption(f"更新時間：{_now_tw().strftime('%Y-%m-%d %H:%M')} (台灣時間)")
 
     # ── 巴菲特指標 ────────────────────────────────────────────────
     st.markdown("### 📐 台灣巴菲特指標（大盤估值）")
