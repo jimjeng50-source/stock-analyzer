@@ -85,9 +85,9 @@ with st.sidebar:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 頁籤
 # ═══════════════════════════════════════════════════════════════════════════════
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "📊 個股分析", "🌐 總體資金面", "📈 回測驗證", "📚 因子說明", "🛡️ 風險監控",
-    "🎯 Forward EPS", "🔗 產業鏈分析", "📅 月營收追蹤",
+    "🎯 Forward EPS", "🔗 產業鏈分析", "📅 月營收追蹤", "🏆 每日推薦",
 ])
 
 
@@ -1652,3 +1652,114 @@ with tab8:
                 )
             else:
                 st.info("尚無歷史公告記錄（請先加入追蹤清單並執行「更新歷史模式」）")
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Tab 9：每日推薦
+# ───────────────────────────────────────────────────────────────────────────────
+with tab9:
+    st.markdown("## 🏆 每日選股推薦")
+    st.markdown("由量化模型掃描全市場，多維篩選後精選高分個股。")
+
+    from screener.recommendation_db import RecommendationDB
+    from datetime import date as _date
+    import pandas as pd
+
+    _rec_db = RecommendationDB()
+
+    # ── 今日推薦 ──────────────────────────────────────────────────────────────
+    today_recs = _rec_db.get_recommendations(_date.today())
+
+    col_info, col_action = st.columns([3, 1])
+    with col_info:
+        if today_recs:
+            scan_date_str = today_recs[0].get("recommend_date", str(_date.today()))
+            st.caption(f"推薦日期：{scan_date_str}　共 {len(today_recs)} 支")
+        else:
+            st.info("今日尚未執行掃描，可點右側按鈕手動觸發。")
+
+    with col_action:
+        if st.button("🔄 立即掃描（需數分鐘）", key="scan_btn"):
+            with st.spinner("掃描中，請稍候（依候選池大小約需 3-10 分鐘）..."):
+                try:
+                    from screener.recommender import DailyRecommender
+                    recommender = DailyRecommender()
+                    scan_result = recommender.run(dry_run=False)
+                    if scan_result.get("error"):
+                        st.error(f"掃描失敗：{scan_result['error']}")
+                    else:
+                        st.success(f"掃描完成！推薦 {len(scan_result['recommendations'])} 支")
+                        today_recs = scan_result["recommendations"]
+                except Exception as _e:
+                    st.error(f"掃描異常：{_e}")
+
+    # ── 推薦卡片 ──────────────────────────────────────────────────────────────
+    if today_recs:
+        medal_map = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+        for rec in today_recs:
+            rank = rec.get("rank", 0)
+            sid = rec.get("stock_id", "")
+            name = rec.get("stock_name", sid)
+            score = rec.get("total_score") or 0
+            price = rec.get("current_price") or 0
+            tp = rec.get("target_price")
+            upside = rec.get("upside_pct")
+            r1 = rec.get("reason_1") or rec.get("key_reasons", [None])[0] if isinstance(rec.get("key_reasons"), list) and rec["key_reasons"] else rec.get("reason_1", "")
+            r2 = rec.get("reason_2") or (rec.get("key_reasons", [None, None])[1] if isinstance(rec.get("key_reasons"), list) and len(rec.get("key_reasons", [])) > 1 else "")
+            r3 = rec.get("reason_3") or (rec.get("key_reasons", [None, None, None])[2] if isinstance(rec.get("key_reasons"), list) and len(rec.get("key_reasons", [])) > 2 else "")
+            risk = rec.get("risk_warning", "")
+
+            medal = medal_map.get(rank, f"#{rank}")
+            score_color = "#6bcb77" if score >= 75 else ("#ffd166" if score >= 60 else "#ff4b4b")
+            tp_str = f"NT${tp:,.0f}（{upside:+.0f}%）" if (tp and upside is not None) else "—"
+
+            st.markdown(
+                f"""
+<div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:16px 20px;margin:10px 0">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <span style="font-size:1.15em;font-weight:700">{medal} {sid} {name}</span>
+    <span style="background:{score_color};color:#0d1117;border-radius:6px;padding:2px 10px;font-weight:700">評分 {score:.0f}/100</span>
+  </div>
+  <div style="color:#8b949e;margin-bottom:8px">
+    現價 NT${price:,.0f}　|　目標價 {tp_str}
+  </div>
+  <div style="margin:6px 0">✅ {r1 or "—"}</div>
+  <div style="margin:6px 0">✅ {r2 or "—"}</div>
+  <div style="margin:6px 0">✅ {r3 or "—"}</div>
+  {"<div style='color:#f0a500;margin-top:8px'>⚠️ " + risk + "</div>" if risk else ""}
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+
+        # ── 下載 CSV ──────────────────────────────────────────────────────────
+        rec_df = pd.DataFrame(today_recs)
+        csv = rec_df.to_csv(index=False, encoding="utf-8-sig")
+        st.download_button("📥 下載推薦清單 CSV", data=csv, file_name=f"recommend_{_date.today()}.csv", mime="text/csv")
+
+    st.markdown("---")
+
+    # ── 績效追蹤 ──────────────────────────────────────────────────────────────
+    st.markdown("### 📊 歷史推薦績效追蹤")
+    perf = _rec_db.get_performance_summary(n_days=90)
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("平均 5 日報酬", f"{perf['avg_return_5d']:+.1f}%" if perf.get("avg_return_5d") is not None else "—")
+    p2.metric("平均 20 日報酬", f"{perf['avg_return_20d']:+.1f}%" if perf.get("avg_return_20d") is not None else "—")
+    p3.metric("5 日勝率", f"{perf['win_rate_5d']*100:.0f}%" if perf.get("win_rate_5d") is not None else "—")
+    p4.metric("已評估推薦數", str(perf.get("evaluated_count", 0)))
+
+    recent_df = _rec_db.get_recent_recommendations(n_days=30)
+    if not recent_df.empty:
+        st.markdown("#### 近 30 日推薦記錄")
+        show_cols = [c for c in ["recommend_date","rank","stock_id","stock_name","total_score","current_price","return_5d_pct","return_20d_pct"] if c in recent_df.columns]
+        st.dataframe(recent_df[show_cols].rename(columns={
+            "recommend_date": "日期", "rank": "排名", "stock_id": "代號",
+            "stock_name": "名稱", "total_score": "評分", "current_price": "推薦價",
+            "return_5d_pct": "5日報酬%", "return_20d_pct": "20日報酬%",
+        }), use_container_width=True, hide_index=True)
+    else:
+        st.info("尚無歷史推薦記錄（每日掃描後自動填入）")
+
+    st.markdown("---")
+    st.caption("⚠️ 本推薦由量化模型自動生成，僅供學習與研究參考，不構成任何投資建議。投資涉及風險，請自行評估。")

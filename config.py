@@ -23,9 +23,9 @@ def _get_secret(key: str, default: str = "") -> str:
 FINMIND_TOKEN = _get_secret("FINMIND_TOKEN")
 ANTHROPIC_API_KEY = _get_secret("ANTHROPIC_API_KEY")
 TELEGRAM_BOT_TOKEN = _get_secret("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = _get_secret("TELEGRAM_CHAT_ID")   # 推播目標 chat_id（向 Bot 發 /start 後取得）
 
 # v3 新增
-LINE_NOTIFY_TOKEN = _get_secret("LINE_NOTIFY_TOKEN")
 SMTP_HOST = _get_secret("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(_get_secret("SMTP_PORT", "587") or "587")
 SMTP_USER = _get_secret("SMTP_USER")
@@ -54,3 +54,26 @@ SCORE_THRESHOLDS = {
     "hold":       45,
     "sell":       30,
 }
+
+# ===== v4 Screener 設定 =====
+
+SCREENER_UNIVERSE_SIZE = int(_get_secret("SCREENER_UNIVERSE_SIZE", "200"))
+SCREENER_TOP_N = int(_get_secret("SCREENER_TOP_N", "5"))
+
+FILTER_MIN_MARKET_CAP_BILLION = 5
+FILTER_MIN_AVG_VOLUME_K = 500
+FILTER_MIN_PRICE = 10.0
+FILTER_MAX_PRICE = 2000.0
+FILTER_EXCLUDE_ETF = True
+FILTER_MIN_REVENUE_YOY = -30.0
+
+SCREENER_QUICK_SCORE_THRESHOLD = 60
+SCREENER_MIN_RECOMMEND_SCORE = 70
+
+BATCH_FETCH_DELAY_SEC = 0.8
+BATCH_MAX_WORKERS = 3
+
+RECOMMENDATION_DB_PATH = "data/recommendations.db"
+
+SCREENER_SCHEDULE_HOUR = 17
+SCREENER_SCHEDULE_MINUTE = 30

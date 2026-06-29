@@ -95,10 +95,42 @@ def run(stock_id: str, use_ai: bool = True, save_report: bool = False):
 
 def main():
     parser = argparse.ArgumentParser(description="台股多因子評分系統")
-    parser.add_argument("--stock", "-s", required=True, help="股票代號，例如：2330")
+    parser.add_argument("--stock", "-s", help="股票代號，例如：2330")
     parser.add_argument("--no-ai", action="store_true", help="不呼叫 Claude API")
     parser.add_argument("--save", action="store_true", help="輸出 HTML 報告至 output/")
+    parser.add_argument("--scan", action="store_true", help="執行全市場掃描並輸出今日推薦")
+    parser.add_argument("--scan-dry-run", action="store_true", help="掃描但不推播、不寫資料庫（測試用）")
+    parser.add_argument("--scan-top", type=int, default=None, help="覆蓋推薦輸出數量")
     args = parser.parse_args()
+
+    if args.scan or args.scan_dry_run:
+        from screener.recommender import DailyRecommender
+        from config import SCREENER_TOP_N
+        import config as _cfg
+
+        if args.scan_top:
+            _cfg.SCREENER_TOP_N = args.scan_top
+
+        recommender = DailyRecommender()
+        result = recommender.run(dry_run=args.scan_dry_run)
+
+        if result.get("error"):
+            print(f"❌ 掃描失敗：{result['error']}")
+            sys.exit(1)
+
+        print(result["message"])
+
+        if not args.scan_dry_run and result["recommendations"]:
+            from alerts.notifier import Notifier
+            notifier = Notifier()
+            notifier.send_telegram(result["message"])
+            print(f"\n✅ 已推播 {len(result['recommendations'])} 支推薦至 Telegram")
+
+        sys.exit(0)
+
+    if not args.stock:
+        parser.print_help()
+        sys.exit(1)
 
     run(args.stock, use_ai=not args.no_ai, save_report=args.save)
 
