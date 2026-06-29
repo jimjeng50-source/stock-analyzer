@@ -118,41 +118,26 @@ class QuickFilter:
     # ── 各步過濾 ───────────────────────────────────────────────────────────────
 
     def _filter_price(self, df: pd.DataFrame) -> pd.DataFrame:
-        if "last_price" not in df.columns:
+        if "last_price" not in df.columns or df.empty:
             return df
-        # 若大多數股票無價格資料（NaN），跳過此過濾避免清空候選池
-        has_price_data = df["last_price"].notna().sum() > len(df) * 0.1
-        if not has_price_data:
-            logger.warning("超過 90%% 個股無價格資料，跳過價格過濾")
+        prices = pd.to_numeric(df["last_price"], errors="coerce").fillna(0)
+        # 防呆（v4.1）：若整欄股價都是 0，代表上游資料抓取失敗，
+        # 跳過價格過濾並警告，而不是把 100% 股票過濾掉
+        if (prices <= 0).all():
+            logger.warning("價格資料全部缺失，跳過價格過濾（請檢查資料來源）")
             return df
-        # NaN（未取得）視為「不確定」→ 保留；只排除確定超出範圍的股票
         mask = (
-            df["last_price"].isna() |
-            ((df["last_price"] >= self.config.min_price) &
-             (df["last_price"] <= self.config.max_price))
+            (prices >= self.config.min_price) &
+            (prices <= self.config.max_price)
         )
         return df[mask]
 
     def _filter_market_cap_volume(self, df: pd.DataFrame) -> pd.DataFrame:
         result = df.copy()
         if "market_cap_b" in result.columns:
-            has_data = result["market_cap_b"].notna().sum() > len(result) * 0.1
-            if has_data:
-                result = result[
-                    result["market_cap_b"].isna() |
-                    (result["market_cap_b"] >= self.config.min_market_cap_b)
-                ]
-            else:
-                logger.warning("市值資料不足，跳過市值過濾")
+            result = result[result["market_cap_b"] >= self.config.min_market_cap_b]
         if "avg_volume_k" in result.columns:
-            has_data = result["avg_volume_k"].notna().sum() > len(result) * 0.1
-            if has_data:
-                result = result[
-                    result["avg_volume_k"].isna() |
-                    (result["avg_volume_k"] >= self.config.min_avg_volume_k)
-                ]
-            else:
-                logger.warning("成交量資料不足，跳過成交量過濾")
+            result = result[result["avg_volume_k"] >= self.config.min_avg_volume_k]
         return result
 
     def _filter_revenue_yoy(self, df: pd.DataFrame) -> pd.DataFrame:

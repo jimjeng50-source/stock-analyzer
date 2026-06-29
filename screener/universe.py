@@ -11,6 +11,7 @@ screener/universe.py
 import json
 import logging
 import os
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -72,6 +73,13 @@ class UniverseManager:
 
         df = self._apply_basic_filters(df)
         df = self._enrich_price_volume(df)
+
+        # 防呆（v4.1）：若快照抓取失敗（空表或股價全為 0），
+        # 明確回傳空表且「不寫入快取」，避免壞資料污染 24 小時
+        if df.empty or (df["last_price"] <= 0).all():
+            logger.error("候選池建立失敗：無有效股價資料（請檢查 FINMIND_TOKEN 或稍後重試）")
+            return pd.DataFrame()
+
         df = df.sort_values("market_cap_b", ascending=False).head(SCREENER_UNIVERSE_SIZE)
         df = df.reset_index(drop=True)
 
@@ -157,11 +165,10 @@ class UniverseManager:
             df["stock_id"] = df["stock_id"].astype(str).str.strip()
             df = df[df["stock_id"].str.match(r"^\d{4,6}$")]
 
-            # 初始化市值和成交量欄位（NaN 代表「未取得」，與真正的 0 不同）
-            import numpy as np
-            df["market_cap_b"] = np.nan
-            df["avg_volume_k"] = np.nan
-            df["last_price"] = np.nan
+            # 初始化市值和成交量欄位
+            df["market_cap_b"] = 0.0
+            df["avg_volume_k"] = 0.0
+            df["last_price"] = 0.0
 
             return df.drop_duplicates("stock_id").reset_index(drop=True)
 
@@ -176,46 +183,43 @@ class UniverseManager:
 
     def _enrich_price_volume(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        批次取得各股最新收盤價和近 20 日均量，用以估算市值。
-        以取樣方式（不超過 SCREENER_UNIVERSE_SIZE 支）抓取，降低 API 負擔。
+        批次取得各股最新收盤價與當日成交量/成交值。
+
+        修正說明（v4.1）：
+        - 原版對 TaiwanStockPrice 發出「全市場 × 30 天」的範圍查詢，
+          FinMind 免費方案不支援此類大範圍批次查詢，必定失敗，
+          導致 last_price 全為 0 → QuickFilter 把所有股票過濾光 →
+          「過濾後無候選股票」。
+        - 改為「單一交易日快照」查詢（start_date == end_date，不帶 data_id），
+          一次請求即可取得全市場當日收盤價/成交量/成交值。
+          從今天起往回最多找 10 天，遇到假日自動跳過。
         """
+        price_df = self._fetch_market_snapshot(max_lookback_days=10)
+
+        if price_df is None or price_df.empty:
+            logger.error(
+                "FinMind 全市場快照抓取失敗（可能是 FINMIND_TOKEN 未設定或配額不足），"
+                "無法建立候選池"
+            )
+            # 回傳空 DataFrame 讓上游明確失敗，而不是帶著全 0 股價繼續跑
+            return pd.DataFrame(columns=df.columns)
+
         try:
-            from datetime import date
-            end = date.today().strftime("%Y-%m-%d")
-            start = (date.today() - timedelta(days=30)).strftime("%Y-%m-%d")
-
-            # 使用 TaiwanStockPrice 批次取得近期股價
-            params = {
-                "dataset": "TaiwanStockPrice",
-                "start_date": start,
-                "end_date": end,
-                "token": FINMIND_TOKEN or "",
-            }
-            resp = requests.get(_FINMIND_API, params=params, timeout=60)
-            resp.raise_for_status()
-            data = resp.json()
-
-            if data.get("status") != 200 or not data.get("data"):
-                logger.warning("TaiwanStockPrice 批次抓取失敗，使用預設值")
-                return df
-
-            price_df = pd.DataFrame(data["data"])
             price_df["stock_id"] = price_df["stock_id"].astype(str)
 
-            # 計算每支股票的最新收盤價和近 20 日均量
             summary = (
-                price_df.sort_values("date")
-                .groupby("stock_id")
+                price_df.groupby("stock_id")
                 .agg(
                     last_price=("close", "last"),
-                    avg_volume_k=("Trading_Volume", lambda x: x.tail(20).mean() / 1000),
+                    avg_volume_k=("Trading_Volume", lambda x: float(x.iloc[-1]) / 1000),
+                    turnover_b=("Trading_money", lambda x: float(x.iloc[-1]) / 1e8),
                 )
                 .reset_index()
             )
 
             # 合併回主表
             df = df.merge(
-                summary[["stock_id", "last_price", "avg_volume_k"]],
+                summary[["stock_id", "last_price", "avg_volume_k", "turnover_b"]],
                 on="stock_id",
                 how="left",
                 suffixes=("_old", ""),
@@ -231,10 +235,15 @@ class UniverseManager:
 
             df["last_price"] = pd.to_numeric(df.get("last_price", 0), errors="coerce").fillna(0)
             df["avg_volume_k"] = pd.to_numeric(df.get("avg_volume_k", 0), errors="coerce").fillna(0)
+            df["turnover_b"] = pd.to_numeric(df.get("turnover_b", 0), errors="coerce").fillna(0)
 
-            # 以股價作為市值代理（無法取得準確股本時）
-            # 粗估：market_cap_b ≈ last_price × 1e7 / 1e8（假設股本約 1 億股）
-            df["market_cap_b"] = df["last_price"] * 1.0
+            # 修正說明（v4.1）：
+            # 原版 market_cap_b = last_price（把「股價」當「市值」），
+            # 排序時會選出「最貴的股票」而非「最大的公司」。
+            # 準確市值需要股本資料（需額外 API），改以「當日成交值（億元）」
+            # 作為規模/流動性代理 — 成交值大的股票同時滿足規模與流動性需求，
+            # 對選股候選池而言是比股價更合理的排序依據。
+            df["market_cap_b"] = df["turnover_b"]
 
             # 基本價格過濾
             df = df[
@@ -248,6 +257,53 @@ class UniverseManager:
         except Exception as e:
             logger.warning("批次取得股價失敗：%s，使用原始清單", e)
             return df
+
+    def _fetch_market_snapshot(self, max_lookback_days: int = 10) -> Optional[pd.DataFrame]:
+        """
+        取得最近一個交易日的全市場股價快照（單日、不帶 data_id）。
+
+        FinMind 的 TaiwanStockPrice 支援「單一日期、全市場」查詢，
+        這是免費方案可用的批次方式（範圍查詢則不支援）。
+        從今天往回走，最多嘗試 max_lookback_days 天（跳過假日）。
+
+        Returns:
+            DataFrame（欄位含 stock_id, close, Trading_Volume, Trading_money）
+            或 None（全部失敗時）
+        """
+        from datetime import date as _date
+
+        for offset in range(max_lookback_days):
+            day = (_date.today() - timedelta(days=offset)).strftime("%Y-%m-%d")
+            try:
+                resp = requests.get(
+                    _FINMIND_API,
+                    params={
+                        "dataset": "TaiwanStockPrice",
+                        "start_date": day,
+                        "end_date": day,
+                        "token": FINMIND_TOKEN or "",
+                    },
+                    timeout=60,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("status") == 200 and data.get("data"):
+                    snap = pd.DataFrame(data["data"])
+                    # 假日/尚未收盤時 data 可能為空 list → 繼續往前找
+                    if not snap.empty and "close" in snap.columns:
+                        logger.info("全市場快照日期：%s（%d 筆）", day, len(snap))
+                        return snap
+                else:
+                    msg = str(data.get("msg", ""))
+                    # 配額不足或權限問題直接中止，不需要再試更早的日期
+                    if "quota" in msg.lower() or "permission" in msg.lower() or "402" in msg:
+                        logger.error("FinMind 回應：%s（配額/權限問題）", msg)
+                        return None
+            except Exception as e:
+                logger.warning("快照 %s 抓取失敗：%s", day, e)
+            time.sleep(0.5)
+
+        return None
 
     def _fetch_latest_price(self, stock_id: str) -> float:
         """取得單支股票最新收盤價（自訂名單補充用）。"""
@@ -282,7 +338,14 @@ class UniverseManager:
             cached_at = datetime.fromisoformat(cache["cached_at"])
             if datetime.now() - cached_at > timedelta(hours=24):
                 return None
-            return pd.DataFrame(cache["data"])
+            df = pd.DataFrame(cache["data"])
+            # 防呆（v4.1）：舊版 bug 可能快取了股價全 0 的壞資料，主動作廢
+            if df.empty or "last_price" not in df.columns:
+                return None
+            if pd.to_numeric(df["last_price"], errors="coerce").fillna(0).le(0).all():
+                logger.warning("快取內容無效（股價全為 0），作廢並重新抓取")
+                return None
+            return df
         except Exception:
             return None
 
