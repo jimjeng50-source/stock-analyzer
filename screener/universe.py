@@ -157,10 +157,11 @@ class UniverseManager:
             df["stock_id"] = df["stock_id"].astype(str).str.strip()
             df = df[df["stock_id"].str.match(r"^\d{4,6}$")]
 
-            # 初始化市值和成交量欄位
-            df["market_cap_b"] = 0.0
-            df["avg_volume_k"] = 0.0
-            df["last_price"] = 0.0
+            # 初始化市值和成交量欄位（NaN 代表「未取得」，與真正的 0 不同）
+            import numpy as np
+            df["market_cap_b"] = np.nan
+            df["avg_volume_k"] = np.nan
+            df["last_price"] = np.nan
 
             return df.drop_duplicates("stock_id").reset_index(drop=True)
 

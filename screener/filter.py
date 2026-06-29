@@ -120,18 +120,39 @@ class QuickFilter:
     def _filter_price(self, df: pd.DataFrame) -> pd.DataFrame:
         if "last_price" not in df.columns:
             return df
+        # 若大多數股票無價格資料（NaN），跳過此過濾避免清空候選池
+        has_price_data = df["last_price"].notna().sum() > len(df) * 0.1
+        if not has_price_data:
+            logger.warning("超過 90%% 個股無價格資料，跳過價格過濾")
+            return df
+        # NaN（未取得）視為「不確定」→ 保留；只排除確定超出範圍的股票
         mask = (
-            (df["last_price"] >= self.config.min_price) &
-            (df["last_price"] <= self.config.max_price)
+            df["last_price"].isna() |
+            ((df["last_price"] >= self.config.min_price) &
+             (df["last_price"] <= self.config.max_price))
         )
         return df[mask]
 
     def _filter_market_cap_volume(self, df: pd.DataFrame) -> pd.DataFrame:
         result = df.copy()
         if "market_cap_b" in result.columns:
-            result = result[result["market_cap_b"] >= self.config.min_market_cap_b]
+            has_data = result["market_cap_b"].notna().sum() > len(result) * 0.1
+            if has_data:
+                result = result[
+                    result["market_cap_b"].isna() |
+                    (result["market_cap_b"] >= self.config.min_market_cap_b)
+                ]
+            else:
+                logger.warning("市值資料不足，跳過市值過濾")
         if "avg_volume_k" in result.columns:
-            result = result[result["avg_volume_k"] >= self.config.min_avg_volume_k]
+            has_data = result["avg_volume_k"].notna().sum() > len(result) * 0.1
+            if has_data:
+                result = result[
+                    result["avg_volume_k"].isna() |
+                    (result["avg_volume_k"] >= self.config.min_avg_volume_k)
+                ]
+            else:
+                logger.warning("成交量資料不足，跳過成交量過濾")
         return result
 
     def _filter_revenue_yoy(self, df: pd.DataFrame) -> pd.DataFrame:
