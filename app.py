@@ -85,8 +85,9 @@ with st.sidebar:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 頁籤
 # ═══════════════════════════════════════════════════════════════════════════════
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 個股分析", "🌐 總體資金面", "📈 回測驗證", "📚 因子說明", "🛡️ 風險監控"
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    "📊 個股分析", "🌐 總體資金面", "📈 回測驗證", "📚 因子說明", "🛡️ 風險監控",
+    "🎯 Forward EPS", "🔗 產業鏈分析", "📅 月營收追蹤",
 ])
 
 
@@ -1272,3 +1273,382 @@ with tab5:
                         st.dataframe(ev_df, use_container_width=True, hide_index=True)
     else:
         st.info("👆 點擊按鈕載入大盤歷史風險相關分析")
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Tab 6：Forward EPS & 目標價
+# ───────────────────────────────────────────────────────────────────────────────
+with tab6:
+    st.subheader("🎯 Forward EPS 推估與目標價分析")
+    st.caption("以 TTM EPS × 營收成長率 × 毛利趨勢修正，推估未來 12 個月 EPS 與三情境目標價")
+
+    if not FINMIND_TOKEN:
+        st.warning("📌 需要 FinMind Token 才能取得財報資料，請在 .env 或 Streamlit Secrets 中設定 FINMIND_TOKEN")
+    else:
+        eps_stock = st.text_input(
+            "分析股票代號", value=stock_id or "2330", max_chars=10, key="eps_stock_input"
+        ).strip()
+        eps_btn = st.button("📊 計算 Forward EPS", type="primary", key="eps_calc_btn")
+
+        if eps_btn and eps_stock:
+            with st.spinner(f"正在計算 {eps_stock} Forward EPS..."):
+                try:
+                    from data.fetcher import DataFetcher
+                    from factors.forward_eps import ForwardEPSCalculator
+
+                    df = DataFetcher()
+                    calc = ForwardEPSCalculator(df)
+                    eps_result = calc.calculate(eps_stock)
+                    _eps_ok = True
+                except Exception as e:
+                    st.error(f"計算失敗：{e}")
+                    _eps_ok = False
+
+            if _eps_ok:
+                if eps_result.get("error"):
+                    st.error(f"❌ {eps_result['error']}")
+                else:
+                    # ── EPS 卡片 ────────────────────────────────────────────
+                    ec1, ec2, ec3, ec4 = st.columns(4)
+                    ttm = eps_result.get("ttm_eps", 0) or 0
+                    fwd = eps_result.get("forward_eps_1y", 0) or 0
+                    growth_pct = (eps_result.get("eps_growth_rate") or 0) * 100
+                    conf = eps_result.get("confidence", "low")
+                    conf_color = {"high": "#6bcb77", "medium": "#ffd93d", "low": "#ff6b6b"}.get(conf, "#aaa")
+                    upside = eps_result.get("upside_pct")
+                    cur_price = eps_result.get("current_price", 0) or 0
+
+                    ec1.metric("TTM EPS（近四季）", f"{ttm:.2f} 元")
+                    ec2.metric(
+                        "Forward EPS（1年推估）",
+                        f"{fwd:.2f} 元",
+                        delta=f"{growth_pct:+.1f}% 成長",
+                        delta_color="normal" if growth_pct >= 0 else "inverse",
+                    )
+                    ec3.metric("當前股價", f"NT${cur_price:,.1f}")
+                    if upside is not None:
+                        ec4.metric(
+                            "基準目標漲幅",
+                            f"{upside:+.1f}%",
+                            delta_color="normal" if upside >= 0 else "inverse",
+                        )
+
+                    # 信心度標籤
+                    st.markdown(
+                        f'<div style="margin:8px 0;display:inline-block;padding:4px 12px;'
+                        f'border-radius:20px;background:#161b22;border:1px solid {conf_color}">'
+                        f'推估信心度：<b style="color:{conf_color}">{conf.upper()}</b>'
+                        f'　{eps_result.get("confidence_reason", "")}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    # ── 三情境目標價長條圖 ────────────────────────────────
+                    st.markdown("---")
+                    tp = eps_result.get("target_price", {})
+                    bull_tp = tp.get("bull") or 0
+                    base_tp = tp.get("base") or 0
+                    bear_tp = tp.get("bear") or 0
+
+                    if any([bull_tp, base_tp, bear_tp]):
+                        fig_tp = go.Figure()
+                        for name, val, color in [
+                            ("牛市目標", bull_tp, "#6bcb77"),
+                            ("基準目標", base_tp, "#00d4ff"),
+                            ("熊市目標", bear_tp, "#ff6b6b"),
+                            ("當前股價", cur_price, "#ffd93d"),
+                        ]:
+                            if val:
+                                fig_tp.add_trace(go.Bar(
+                                    name=name, x=[name], y=[val],
+                                    marker_color=color,
+                                    text=[f"NT${val:,.1f}"], textposition="outside",
+                                ))
+                        fig_tp.update_layout(
+                            template="plotly_dark",
+                            title=f"{eps_stock} 三情境目標價 vs 當前股價",
+                            yaxis_title="股價（元）",
+                            height=350, showlegend=False,
+                        )
+                        st.plotly_chart(fig_tp, use_container_width=True)
+
+                    # ── P/E 歷史分位數 ────────────────────────────────────
+                    pe_band = eps_result.get("pe_band", {})
+                    if pe_band.get("p25") and pe_band.get("p75"):
+                        st.markdown("#### 📊 本益比歷史分位數")
+                        pb1, pb2, pb3, pb4 = st.columns(4)
+                        pb1.metric("P/E 25 分位", f"{pe_band['p25']:.1f}x")
+                        pb2.metric("P/E 中位數", f"{pe_band['median']:.1f}x")
+                        pb3.metric("P/E 75 分位", f"{pe_band['p75']:.1f}x")
+                        if pe_band.get("current"):
+                            pb4.metric("當前 P/E", f"{pe_band['current']:.1f}x")
+
+                    # ── PEG Ratio ─────────────────────────────────────────
+                    peg = eps_result.get("peg_ratio")
+                    if peg is not None:
+                        st.markdown("---")
+                        peg_color = "#6bcb77" if peg < 1.0 else "#ffd93d" if peg < 2.0 else "#ff6b6b"
+                        peg_label = "合理偏低" if peg < 1.0 else "合理" if peg < 2.0 else "偏高"
+                        st.markdown(
+                            f'<div style="background:#161b22;border-radius:10px;padding:12px 18px;display:inline-block">'
+                            f'PEG Ratio：<b style="font-size:1.6rem;color:{peg_color}">{peg:.2f}</b>'
+                            f'　<span style="color:{peg_color}">（{peg_label}）</span><br>'
+                            f'<span style="color:#888;font-size:0.85rem">PEG = 本益比 ÷ 成長率%，<1 通常視為合理/低估</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+        elif not eps_btn:
+            st.info("👈 輸入股票代號並按「計算 Forward EPS」開始分析")
+            st.markdown("""
+**計算方法說明：**
+1. **TTM EPS** = 最近四季 EPS 加總
+2. **成長率** = 近 6 個月月營收 YoY 平均
+3. **毛利趨勢修正** = 毛利率偏離均值的比例（±5% 上限）
+4. **Forward EPS** = TTM EPS × (1 + 調整後成長率)
+5. **目標價** = Forward EPS × 歷史 P/E 分位數
+""")
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Tab 7：產業鏈分析
+# ───────────────────────────────────────────────────────────────────────────────
+with tab7:
+    st.subheader("🔗 產業鏈 Lead-Lag 景氣信號分析")
+    st.caption("根據上中下游月營收 YoY 與外資籌碼，推估資金流向與 Lead-Lag 效應")
+
+    from factors.supply_chain import SUPPLY_CHAIN_MAP
+
+    chain_options = {
+        "semiconductor": "🔬 半導體產業鏈",
+        "ai_server": "🤖 AI 伺服器供應鏈",
+        "ev_components": "⚡ 電動車零組件",
+    }
+    selected_chain = st.selectbox(
+        "選擇產業鏈",
+        options=list(chain_options.keys()),
+        format_func=lambda x: chain_options[x],
+        key="chain_select",
+    )
+
+    chain_btn = st.button("📡 分析產業鏈信號", type="primary", key="chain_analyze_btn")
+
+    if chain_btn:
+        if not FINMIND_TOKEN:
+            st.warning("📌 需要 FinMind Token 才能取得籌碼資料")
+        else:
+            with st.spinner(f"正在分析 {chain_options[selected_chain]}..."):
+                try:
+                    from data.fetcher import DataFetcher
+                    from factors.supply_chain import SupplyChainAnalyzer
+
+                    chain_fetcher = DataFetcher()
+                    chain_analyzer = SupplyChainAnalyzer(chain_fetcher)
+                    chain_result = chain_analyzer.analyze_chain(selected_chain)
+                    _chain_ok = True
+                except Exception as e:
+                    st.error(f"分析失敗：{e}")
+                    _chain_ok = False
+
+            if _chain_ok:
+                overall_sig = chain_result["overall_signal"]
+                sig_label = chain_result["signal_label"]
+                tier_sigs = chain_result["tier_signals"]
+                lead_lag = chain_result["lead_lag_months"]
+
+                # ── 整體信號卡 ────────────────────────────────────────────
+                sig_color = "#6bcb77" if overall_sig > 0.3 else "#ff6b6b" if overall_sig < -0.3 else "#ffd93d"
+                st.markdown(
+                    f'<div style="background:#161b22;border-radius:12px;padding:16px 24px;margin:8px 0">'
+                    f'<div style="font-size:0.9rem;color:#888">{chain_result["chain_name"]} 整體信號</div>'
+                    f'<div style="font-size:2.4rem;font-weight:bold;color:{sig_color}">{overall_sig:+.2f}</div>'
+                    f'<div style="font-size:1.1rem;color:{sig_color}">{sig_label}</div>'
+                    f'<div style="font-size:0.8rem;color:#666;margin-top:6px">Lead-Lag：上游領先下游約 {lead_lag} 個月</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+                # ── 三層信號儀表板 ────────────────────────────────────────
+                st.markdown("#### 上中下游信號")
+                tc1, tc2, tc3 = st.columns(3)
+                chain_info = SUPPLY_CHAIN_MAP[selected_chain]
+                tier_label_map = {"upstream": "上游", "midstream": "中游", "downstream": "下游"}
+
+                for col, tier_key in zip([tc1, tc2, tc3], ["upstream", "midstream", "downstream"]):
+                    tier_sig = tier_sigs.get(tier_key, 0.0)
+                    tier_color = "#6bcb77" if tier_sig > 0.2 else "#ff6b6b" if tier_sig < -0.2 else "#aaa"
+                    tier_label = tier_label_map[tier_key]
+                    tier_desc = chain_info["tiers"][tier_key]["description"]
+                    tier_stocks = ", ".join(chain_info["tiers"][tier_key]["stocks"][:3])
+
+                    with col:
+                        st.markdown(
+                            f'<div style="background:#0d1117;border:1px solid {tier_color};'
+                            f'border-radius:10px;padding:14px;text-align:center">'
+                            f'<div style="font-size:1rem;font-weight:bold;color:#ddd">{tier_label}</div>'
+                            f'<div style="font-size:0.8rem;color:#888;margin-bottom:8px">{tier_desc}</div>'
+                            f'<div style="font-size:2rem;font-weight:bold;color:{tier_color}">{tier_sig:+.2f}</div>'
+                            f'<div style="font-size:0.75rem;color:#666;margin-top:6px">代表股：{tier_stocks}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                # ── 資金流向推論 ──────────────────────────────────────────
+                st.markdown("---")
+                st.markdown("#### 💡 資金流向推論")
+                flow_text = chain_result.get("capital_flow_direction", "")
+                if flow_text:
+                    bg = "#0d2d1a" if overall_sig > 0.2 else "#2d1010" if overall_sig < -0.2 else "#1a1a2e"
+                    border = "#00c087" if overall_sig > 0.2 else "#ff4b4b" if overall_sig < -0.2 else "#888"
+                    st.markdown(
+                        f'<div style="background:{bg};border-left:4px solid {border};'
+                        f'padding:12px 16px;border-radius:6px;line-height:1.8">{flow_text}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                # ── 建議關注個股 ──────────────────────────────────────────
+                watch_stocks = chain_result.get("top_stocks_to_watch", [])
+                if watch_stocks:
+                    st.markdown("---")
+                    st.markdown("#### 🔍 建議關注個股（尚未充分反映上游信號）")
+                    st.markdown(
+                        "、".join(f"`{s}`" for s in watch_stocks)
+                        + "　（上游信號強但下游尚未跟進，存在 Lead-Lag 卡位機會）"
+                    )
+
+    else:
+        st.info("👆 選擇產業鏈後按「分析產業鏈信號」")
+        for chain_key, chain_info in SUPPLY_CHAIN_MAP.items():
+            with st.expander(f"{chain_options.get(chain_key, chain_key)} 追蹤標的", expanded=False):
+                rows = []
+                for tier_key, tier_info in chain_info["tiers"].items():
+                    tier_desc_map = {"upstream": "上游", "midstream": "中游", "downstream": "下游"}
+                    rows.append({
+                        "層級": tier_desc_map.get(tier_key, tier_key),
+                        "描述": tier_info["description"],
+                        "追蹤個股": ", ".join(tier_info["stocks"]),
+                        "權重": f"{tier_info['weight'] * 100:.0f}%",
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Tab 8：月營收追蹤
+# ───────────────────────────────────────────────────────────────────────────────
+with tab8:
+    st.subheader("📅 月營收追蹤與公告提醒")
+    st.caption("追蹤個股月營收公告時程，自動偵測新公告，依法規每月 10 日前公布")
+
+    if not FINMIND_TOKEN:
+        st.warning("📌 需要 FinMind Token 才能取得月營收資料")
+    else:
+        try:
+            from data.fetcher import DataFetcher
+            from alerts.revenue_calendar import RevenueCalendar
+
+            _rc_fetcher = DataFetcher()
+            _rc = RevenueCalendar(_rc_fetcher)
+            _rc_ok = True
+        except Exception as e:
+            st.error(f"月營收追蹤模組載入失敗：{e}")
+            _rc_ok = False
+
+        if _rc_ok:
+            # ── 追蹤清單管理 ─────────────────────────────────────────────
+            with st.expander("⚙️ 追蹤清單管理", expanded=False):
+                add_col, del_col = st.columns(2)
+                with add_col:
+                    new_stock_id = st.text_input("加入追蹤", placeholder="股票代號（如 2330）", key="rc_add")
+                    new_stock_name = st.text_input("股票名稱（選填）", placeholder="如 台積電", key="rc_name")
+                    if st.button("➕ 加入", key="rc_add_btn"):
+                        if new_stock_id:
+                            _rc.add_to_watchlist(new_stock_id.strip(), new_stock_name.strip())
+                            st.success(f"已加入：{new_stock_id}")
+                            st.rerun()
+
+                watchlist = _rc.get_watchlist()
+                if watchlist:
+                    st.markdown(f"**目前追蹤 {len(watchlist)} 檔個股**")
+                    wl_df = pd.DataFrame(watchlist)
+                    st.dataframe(wl_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("追蹤清單為空，請加入個股")
+
+            # ── 即將公布月營收 ────────────────────────────────────────────
+            st.markdown("### 📆 本週即將公布月營收")
+            with st.spinner("預測即將公布個股..."):
+                try:
+                    upcoming = _rc.get_upcoming_announcements(days_ahead=7)
+                except Exception:
+                    upcoming = []
+
+            if upcoming:
+                rows = []
+                for s in upcoming:
+                    conf_icon = {"high": "★★★", "medium": "★★", "low": "★"}.get(
+                        s.get("confidence", "low"), "★"
+                    )
+                    exp_date = s.get("expected_date")
+                    rows.append({
+                        "股票代號": s["stock_id"],
+                        "股票名稱": s.get("stock_name", ""),
+                        "預期公布日": exp_date.strftime("%m/%d") if exp_date else "—",
+                        "預測信心度": conf_icon,
+                        "上次 YoY": f"{s['last_revenue_yoy']:+.1f}%" if s.get("last_revenue_yoy") else "—",
+                    })
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("本週無預計公布月營收個股（追蹤清單可能為空，或尚未建立歷史模式）")
+
+            st.markdown("---")
+
+            # ── 手動檢查今日新公告 ────────────────────────────────────────
+            st.markdown("### 🔔 手動觸發：檢查今日新公告")
+            if st.button("🔍 立即檢查今日新公告", key="rc_check_btn"):
+                with st.spinner("正在檢查今日月營收公告..."):
+                    try:
+                        new_items = _rc.check_new_announcements()
+                    except Exception as e:
+                        st.error(f"檢查失敗：{e}")
+                        new_items = []
+
+                if new_items:
+                    st.success(f"✅ 發現 {len(new_items)} 個新公告！")
+                    for item in new_items:
+                        yoy = item.get("yoy_pct")
+                        yoy_str = f"{yoy:+.1f}%" if yoy is not None else "N/A"
+                        yoy_color = "#6bcb77" if (yoy or 0) >= 0 else "#ff4b4b"
+                        st.markdown(
+                            f'<div style="background:#161b22;border-radius:8px;padding:12px 16px;margin:6px 0">'
+                            f'<b>{item["stock_id"]} {item.get("stock_name", "")}</b>'
+                            f'　{item.get("revenue_month", "")} 月營收'
+                            f'　YoY：<b style="color:{yoy_color}">{yoy_str}</b>'
+                            f'　金額：{item.get("revenue_amount", 0):,.0f} 千元'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.info("今日尚無新公告（或追蹤清單為空）")
+
+            # ── 近3月已公布排行榜 ─────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("### 📊 近 3 個月月營收 YoY 排行榜")
+            with st.spinner("載入近期公告..."):
+                try:
+                    recent_df = _rc.get_recent_announcements(months=3)
+                except Exception:
+                    recent_df = pd.DataFrame()
+
+            if not recent_df.empty:
+                recent_df["yoy_pct"] = pd.to_numeric(recent_df["yoy_pct"], errors="coerce")
+                recent_df = recent_df.sort_values("yoy_pct", ascending=False)
+                recent_df["YoY (%)"] = recent_df["yoy_pct"].apply(
+                    lambda x: f"{x:+.1f}%" if pd.notna(x) else "N/A"
+                )
+                st.dataframe(
+                    recent_df[["stock_id", "stock_name", "revenue_month", "YoY (%)", "announce_date"]].rename(columns={
+                        "stock_id": "代號", "stock_name": "名稱",
+                        "revenue_month": "月份", "announce_date": "公告日",
+                    }),
+                    use_container_width=True, hide_index=True,
+                )
+            else:
+                st.info("尚無歷史公告記錄（請先加入追蹤清單並執行「更新歷史模式」）")

@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Optional
 from config import FACTOR_WEIGHTS, SCORE_THRESHOLDS
 
 
@@ -202,4 +203,153 @@ class Scorer:
             "category_scores": cat_scores,
             "recommendation": _recommendation(total),
             "raw_factors": raw,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v3 擴充：WEIGHTS_V3 + ScorerV3
+# ─────────────────────────────────────────────────────────────────────────────
+
+WEIGHTS_V3 = {
+    "chip_score":        0.25,  # 籌碼面
+    "fundamental_score": 0.20,  # 基本面
+    "technical_score":   0.15,  # 技術面
+    "momentum_score":    0.10,  # 動能面
+    "risk_score":        0.05,  # 風險面
+    "forward_eps_score": 0.15,  # Forward EPS 上修動能（新增）
+    "quality_score":     0.05,  # 財務品質（新增）
+    "chain_score":       0.05,  # 產業鏈信號（新增）
+}
+
+
+def _compute_forward_eps_score(forward_eps_data: Optional[dict]) -> float:
+    """
+    將 ForwardEPSCalculator 結果轉換為 0-100 分。
+
+    - EPS 成長率 > 20%: 90-100
+    - 10-20%: 70-89
+    - 0-10%: 50-69
+    - 負成長: 0-49
+    - PEG < 1: +10 加分
+    - 信心度 high: 維持, medium: -5, low: -10
+    """
+    if forward_eps_data is None or forward_eps_data.get("error"):
+        return 50.0
+
+    growth = forward_eps_data.get("eps_growth_rate")
+    if growth is None:
+        return 50.0
+
+    g_pct = growth * 100  # 轉為百分比
+
+    if g_pct >= 20:
+        base = 90.0
+    elif g_pct >= 10:
+        base = 70.0 + (g_pct - 10) / 10 * 20
+    elif g_pct >= 0:
+        base = 50.0 + g_pct / 10 * 20
+    else:
+        base = max(0.0, 50.0 + g_pct * 1.0)  # 負成長每1%扣1分，最低0
+
+    # PEG 加分
+    peg = forward_eps_data.get("peg_ratio")
+    if peg and peg < 1.0:
+        base = min(100.0, base + 10)
+
+    # 信心度調整
+    confidence = forward_eps_data.get("confidence", "low")
+    if confidence == "medium":
+        base -= 5
+    elif confidence == "low":
+        base -= 10
+
+    return round(float(np.clip(base, 0.0, 100.0)), 1)
+
+
+class ScorerV3:
+    """
+    v3 加權因子評分模型，整合 Forward EPS、財務品質、產業鏈信號。
+
+    使用方式：
+        scorer = ScorerV3()
+        v2_result = scorer.score(chips, technical, fundamental, momentum)
+        v3_result = scorer.score_v3(
+            chips, technical, fundamental, momentum,
+            forward_eps_data=..., quality_data=..., chain_data=...
+        )
+    """
+
+    def __init__(self):
+        self._v2_weights = {
+            "chips": WEIGHTS_V3["chip_score"],
+            "fundamental": WEIGHTS_V3["fundamental_score"],
+            "technical": WEIGHTS_V3["technical_score"],
+            "momentum": WEIGHTS_V3["momentum_score"],
+            "risk": WEIGHTS_V3["risk_score"],
+        }
+        total = sum(self._v2_weights.values())
+        if total > 0:
+            self._v2_weights = {k: v / total for k, v in self._v2_weights.items()}
+        self._v2_scorer = Scorer(self._v2_weights)
+
+    def score_v3(
+        self,
+        chips: dict,
+        technical: dict,
+        fundamental: dict,
+        momentum: dict,
+        forward_eps_data: Optional[dict] = None,
+        quality_data: Optional[dict] = None,
+        chain_data: Optional[dict] = None,
+    ) -> dict:
+        """
+        計算 v3 綜合評分，整合三個新因子。
+
+        回傳：
+            {
+                "total_score": float,
+                "category_scores": dict,
+                "recommendation": str,
+                "raw_factors": dict,
+                "v3_scores": {
+                    "forward_eps_score": float,
+                    "quality_score": float,
+                    "chain_score": float,
+                },
+            }
+        """
+        # 先計算 v2 各類別分數
+        v2_result = self._v2_scorer.score(chips, technical, fundamental, momentum)
+        cat_scores = v2_result["category_scores"].copy()
+
+        # 計算 v3 新因子分數
+        forward_eps_score = _compute_forward_eps_score(forward_eps_data)
+        quality_score = float(quality_data.get("quality_score", 50.0)) if quality_data else 50.0
+        chain_score = float(chain_data.get("chain_score", 50.0)) if chain_data else 50.0
+
+        v3_scores = {
+            "forward_eps_score": forward_eps_score,
+            "quality_score": quality_score,
+            "chain_score": chain_score,
+        }
+
+        # 加權總分（依 WEIGHTS_V3）
+        total = (
+            cat_scores.get("chips", 50.0) * WEIGHTS_V3["chip_score"]
+            + cat_scores.get("fundamental", 50.0) * WEIGHTS_V3["fundamental_score"]
+            + cat_scores.get("technical", 50.0) * WEIGHTS_V3["technical_score"]
+            + cat_scores.get("momentum", 50.0) * WEIGHTS_V3["momentum_score"]
+            + cat_scores.get("risk", 50.0) * WEIGHTS_V3["risk_score"]
+            + forward_eps_score * WEIGHTS_V3["forward_eps_score"]
+            + quality_score * WEIGHTS_V3["quality_score"]
+            + chain_score * WEIGHTS_V3["chain_score"]
+        )
+        total = round(total, 1)
+
+        return {
+            "total_score": total,
+            "category_scores": cat_scores,
+            "recommendation": _recommendation(total),
+            "raw_factors": v2_result["raw_factors"],
+            "v3_scores": v3_scores,
         }

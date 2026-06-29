@@ -23,6 +23,14 @@ def _get_secret(key: str, default: str = "") -> str:
 FINMIND_TOKEN = _get_secret("FINMIND_TOKEN")
 ANTHROPIC_API_KEY = _get_secret("ANTHROPIC_API_KEY")
 TELEGRAM_BOT_TOKEN = _get_secret("TELEGRAM_BOT_TOKEN")
+
+# v3 新增
+LINE_NOTIFY_TOKEN = _get_secret("LINE_NOTIFY_TOKEN")
+SMTP_HOST = _get_secret("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(_get_secret("SMTP_PORT", "587") or "587")
+SMTP_USER = _get_secret("SMTP_USER")
+SMTP_PASSWORD = _get_secret("SMTP_PASSWORD")
+ALERT_EMAIL = _get_secret("ALERT_EMAIL")
 CLAUDE_MODEL = "claude-sonnet-4-6"
 
 # 預設取資料天數（股價、籌碼）

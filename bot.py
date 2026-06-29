@@ -146,8 +146,16 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📖 *使用說明*\n\n"
         "直接傳*股票代號*（純數字）→ 快速評分\n\n"
+        "━━━ 個股分析 ━━━\n"
         "*/analyze 代號* → 完整分析 + Claude AI 建議\n"
-        "*/quick 代號* → 只看評分，速度較快\n\n"
+        "*/quick 代號* → 只看評分，速度較快\n"
+        "*/eps 代號* → Forward EPS 與三情境目標價\n"
+        "*/report 代號* → 完整研究報告摘要\n\n"
+        "━━━ 產業與市場 ━━━\n"
+        "*/chain semiconductor* → 半導體產業鏈信號\n"
+        "*/chain ai\\_server* → AI 伺服器供應鏈\n"
+        "*/chain ev\\_components* → 電動車零組件\n"
+        "*/revenue* → 本週即將公布月營收個股\n\n"
         "資料來源：FinMind API + yfinance\n"
         "AI 建議：Anthropic Claude",
         parse_mode="Markdown",
@@ -166,6 +174,197 @@ async def cmd_quick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("用法：`/quick 2330`", parse_mode="Markdown")
         return
     await _analyze(update, context.args[0], use_ai=False)
+
+
+# ── v3 新增指令 ────────────────────────────────────────────────────────────────
+
+async def cmd_revenue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/revenue — 顯示本週即將公布月營收的個股清單"""
+    wait_msg = await update.message.reply_text("⏳ 查詢本週即將公布月營收清單...")
+    try:
+        from data.fetcher import DataFetcher
+        from alerts.revenue_calendar import RevenueCalendar
+        from alerts.notifier import Notifier
+
+        loop = asyncio.get_event_loop()
+
+        def _run():
+            fetcher = DataFetcher()
+            cal = RevenueCalendar(fetcher)
+            upcoming = cal.get_upcoming_announcements(days_ahead=7)
+            notifier = Notifier()
+            return notifier.format_weekly_preview(upcoming)
+
+        msg = await loop.run_in_executor(_executor, _run)
+        await wait_msg.edit_text(msg)
+    except Exception as e:
+        logger.error(f"/revenue 失敗：{e}")
+        await wait_msg.edit_text(f"❌ 查詢失敗：{e}")
+
+
+async def cmd_chain(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/chain [產業] — 顯示指定產業鏈的當前景氣信號"""
+    valid_chains = {
+        "semiconductor": "半導體產業鏈",
+        "ai_server": "AI 伺服器供應鏈",
+        "ev_components": "電動車零組件",
+        "半導體": "semiconductor",
+        "ai": "ai_server",
+        "ev": "ev_components",
+    }
+    chain_arg = context.args[0].lower() if context.args else "semiconductor"
+    # 中文別名對應
+    if chain_arg in ("半導體",):
+        chain_arg = "semiconductor"
+    elif chain_arg in ("ai", "ai伺服器", "伺服器"):
+        chain_arg = "ai_server"
+    elif chain_arg in ("ev", "電動車", "ev_components"):
+        chain_arg = "ev_components"
+
+    if chain_arg not in ("semiconductor", "ai_server", "ev_components"):
+        await update.message.reply_text(
+            "❌ 請指定有效產業鏈：\n"
+            "`/chain semiconductor` — 半導體\n"
+            "`/chain ai_server` — AI 伺服器\n"
+            "`/chain ev_components` — 電動車零組件",
+            parse_mode="Markdown",
+        )
+        return
+
+    wait_msg = await update.message.reply_text(f"⏳ 分析 {chain_arg} 產業鏈...")
+    try:
+        from data.fetcher import DataFetcher
+        from factors.supply_chain import SupplyChainAnalyzer
+        from alerts.notifier import Notifier
+
+        loop = asyncio.get_event_loop()
+
+        def _run():
+            fetcher = DataFetcher()
+            analyzer = SupplyChainAnalyzer(fetcher)
+            result = analyzer.analyze_chain(chain_arg)
+            notifier = Notifier()
+            return notifier.format_chain_signal(result), result
+
+        msg, chain_result = await loop.run_in_executor(_executor, _run)
+        flow = chain_result.get("capital_flow_direction", "")
+        full_msg = msg + (f"\n\n💡 {flow}" if flow else "")
+        await wait_msg.edit_text(full_msg)
+    except Exception as e:
+        logger.error(f"/chain 失敗：{e}")
+        await wait_msg.edit_text(f"❌ 分析失敗：{e}")
+
+
+async def cmd_eps(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/eps [股票代號] — 顯示指定個股的 Forward EPS 與目標價"""
+    if not context.args:
+        await update.message.reply_text("用法：`/eps 2330`", parse_mode="Markdown")
+        return
+
+    stock_id = context.args[0].strip()
+    if not stock_id.isdigit():
+        await update.message.reply_text("❌ 請輸入正確的股票代號（純數字）")
+        return
+
+    wait_msg = await update.message.reply_text(f"⏳ 計算 {stock_id} Forward EPS...")
+    try:
+        from data.fetcher import DataFetcher
+        from factors.forward_eps import ForwardEPSCalculator
+
+        loop = asyncio.get_event_loop()
+
+        def _run():
+            fetcher = DataFetcher()
+            calc = ForwardEPSCalculator(fetcher)
+            return calc.calculate(stock_id)
+
+        eps = await loop.run_in_executor(_executor, _run)
+
+        if eps.get("error"):
+            await wait_msg.edit_text(f"❌ {eps['error']}")
+            return
+
+        tp = eps.get("target_price", {})
+        growth_pct = (eps.get("eps_growth_rate") or 0) * 100
+        conf = eps.get("confidence", "low")
+        conf_icon = {"high": "✅", "medium": "🔶", "low": "⚠️"}.get(conf, "⚠️")
+        peg = eps.get("peg_ratio")
+        peg_str = f"PEG：{peg:.2f}" if peg else "PEG：N/A"
+
+        msg = (
+            f"🎯 *{stock_id} Forward EPS 分析*\n\n"
+            f"💰 當前股價：NT${eps.get('current_price', 0):,.1f}\n"
+            f"📊 TTM EPS：{eps.get('ttm_eps', 0):.2f} 元\n"
+            f"📈 Forward EPS：{eps.get('forward_eps_1y', 0):.2f} 元（{growth_pct:+.1f}%）\n"
+            f"\n━━━ 三情境目標價 ━━━\n"
+            f"🐻 熊市：NT${tp.get('bear') or 0:,.1f}\n"
+            f"📌 基準：NT${tp.get('base') or 0:,.1f}\n"
+            f"🐂 牛市：NT${tp.get('bull') or 0:,.1f}\n"
+        )
+        if eps.get("upside_pct") is not None:
+            msg += f"\n📐 距基準漲幅：{eps['upside_pct']:+.1f}%\n"
+        msg += f"\n{peg_str}\n{conf_icon} 信心度：{conf}｜{eps.get('confidence_reason', '')}"
+
+        await wait_msg.edit_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"/eps {stock_id} 失敗：{e}")
+        await wait_msg.edit_text(f"❌ 計算失敗：{e}")
+
+
+async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/report [股票代號] — 生成並傳送完整研究報告摘要"""
+    if not context.args:
+        await update.message.reply_text("用法：`/report 2330`", parse_mode="Markdown")
+        return
+
+    stock_id = context.args[0].strip()
+    if not stock_id.isdigit():
+        await update.message.reply_text("❌ 請輸入正確的股票代號（純數字）")
+        return
+
+    wait_msg = await update.message.reply_text(
+        f"⏳ 正在為 {stock_id} 生成完整研究報告（可能需要 30-60 秒）..."
+    )
+    try:
+        from data.fetcher import DataFetcher
+        from reports.research_report import ResearchReportGenerator
+
+        loop = asyncio.get_event_loop()
+
+        def _run():
+            fetcher = DataFetcher()
+            gen = ResearchReportGenerator(fetcher)
+            return gen.generate(stock_id)
+
+        report = await loop.run_in_executor(_executor, _run)
+
+        if report.get("error"):
+            await wait_msg.edit_text(f"❌ {report['error']}")
+            return
+
+        summary = report.get("report_summary", "")
+        tp = report.get("target_price", {})
+        base_tp = tp.get("base")
+        forward_eps = report.get("forward_eps_data", {})
+        confidence = forward_eps.get("confidence", "low")
+        conf_icon = {"high": "✅", "medium": "🔶", "low": "⚠️"}.get(confidence, "⚠️")
+
+        msg = (
+            f"📋 *{stock_id} 研究報告摘要*\n\n"
+            f"{summary}\n\n"
+        )
+        if base_tp:
+            msg += f"🎯 基準目標價：NT${base_tp:,.1f}\n"
+        msg += f"{conf_icon} 推估信心度：{confidence}"
+
+        await wait_msg.edit_text(msg, parse_mode="Markdown")
+        await update.message.reply_text(
+            "💡 完整 Markdown 報告（前 2000 字）：\n\n"
+            + report.get("report_text", "")[:2000]
+        )
+    except Exception as e:
+        logger.error(f"/report {stock_id} 失敗：{e}")
+        await wait_msg.edit_text(f"❌ 報告生成失敗：{e}")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -191,6 +390,11 @@ def main():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("analyze", cmd_analyze))
     app.add_handler(CommandHandler("quick", cmd_quick))
+    # v3 新增指令
+    app.add_handler(CommandHandler("revenue", cmd_revenue))
+    app.add_handler(CommandHandler("chain", cmd_chain))
+    app.add_handler(CommandHandler("eps", cmd_eps))
+    app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("🤖 台股機器人已啟動，按 Ctrl+C 停止")
