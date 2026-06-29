@@ -156,6 +156,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*/chain ai\\_server* → AI 伺服器供應鏈\n"
         "*/chain ev\\_components* → 電動車零組件\n"
         "*/revenue* → 本週即將公布月營收個股\n\n"
+        "━━━ 設定 ━━━\n"
+        "*/myid* → 查詢你的 Chat ID（用於啟用主動推播）\n\n"
         "資料來源：FinMind API + yfinance\n"
         "AI 建議：Anthropic Claude",
         parse_mode="Markdown",
@@ -367,6 +369,19 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await wait_msg.edit_text(f"❌ 報告生成失敗：{e}")
 
 
+async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/myid — 顯示目前的 Telegram Chat ID，用於設定 TELEGRAM_CHAT_ID 環境變數"""
+    chat_id = update.effective_chat.id
+    await update.message.reply_text(
+        f"🆔 *你的 Chat ID*\n\n`{chat_id}`\n\n"
+        "請將此數字填入 `.env` 的 `TELEGRAM_CHAT_ID`，\n"
+        "或在 Streamlit Cloud → Settings → Secrets 中加入：\n"
+        "`TELEGRAM_CHAT_ID = \"" + str(chat_id) + "\"`\n\n"
+        "設定後，排程器就能主動推播月營收與產業鏈警示給你。",
+        parse_mode="Markdown",
+    )
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text.isdigit() and 3 <= len(text) <= 6:
@@ -395,6 +410,7 @@ def main():
     app.add_handler(CommandHandler("chain", cmd_chain))
     app.add_handler(CommandHandler("eps", cmd_eps))
     app.add_handler(CommandHandler("report", cmd_report))
+    app.add_handler(CommandHandler("myid", cmd_myid))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("🤖 台股機器人已啟動，按 Ctrl+C 停止")

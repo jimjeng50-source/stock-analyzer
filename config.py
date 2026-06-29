@@ -23,9 +23,9 @@ def _get_secret(key: str, default: str = "") -> str:
 FINMIND_TOKEN = _get_secret("FINMIND_TOKEN")
 ANTHROPIC_API_KEY = _get_secret("ANTHROPIC_API_KEY")
 TELEGRAM_BOT_TOKEN = _get_secret("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = _get_secret("TELEGRAM_CHAT_ID")   # 推播目標 chat_id（向 Bot 發 /start 後取得）
 
 # v3 新增
-LINE_NOTIFY_TOKEN = _get_secret("LINE_NOTIFY_TOKEN")
 SMTP_HOST = _get_secret("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(_get_secret("SMTP_PORT", "587") or "587")
 SMTP_USER = _get_secret("SMTP_USER")

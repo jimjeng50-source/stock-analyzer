@@ -54,7 +54,7 @@ def run_scheduler():
             upcoming = calendar.get_upcoming_announcements(days_ahead=10)
             if upcoming:
                 msg = notifier.format_weekly_preview(upcoming)
-                notifier.send_line(msg)
+                notifier.send_telegram(msg)
                 logger.info("月初預告已推播，共 %d 個股", len(upcoming))
             else:
                 logger.info("本月無預計公布個股")
@@ -73,7 +73,7 @@ def run_scheduler():
                 return
             for item in new_items:
                 msg = notifier.format_revenue_alert(item)
-                notifier.send_line(msg)
+                notifier.send_telegram(msg)
                 logger.info("新公告推播：%s YoY=%s%%", item["stock_id"], item.get("yoy_pct"))
         except Exception as e:
             logger.error("新公告偵測任務失敗：%s", e)
@@ -86,7 +86,7 @@ def run_scheduler():
             _, calendar, notifier = _get_components()
             upcoming = calendar.get_upcoming_announcements(days_ahead=7)
             msg = notifier.format_weekly_preview(upcoming)
-            notifier.send_line(msg)
+            notifier.send_telegram(msg)
             logger.info("週報已推播，共 %d 個股", len(upcoming))
         except Exception as e:
             logger.error("週報任務失敗：%s", e)
@@ -107,7 +107,7 @@ def run_scheduler():
                     # 只在信號明顯時推播
                     if abs(overall) >= 0.5:
                         msg = notifier.format_chain_signal(result)
-                        notifier.send_line(msg)
+                        notifier.send_telegram(msg)
                 except Exception as ex:
                     logger.warning("產業鏈 %s 更新失敗：%s", chain_key, ex)
         except Exception as e:

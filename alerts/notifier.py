@@ -1,6 +1,6 @@
 """
 alerts/notifier.py
-推播通知模組：支援 LINE Notify 與 Email（SMTP）
+推播通知模組：支援 Telegram Bot 與 Email（SMTP）
 """
 
 import logging
@@ -12,64 +12,66 @@ from typing import Optional
 import requests
 
 from config import (
-    LINE_NOTIFY_TOKEN,
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
     SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, ALERT_EMAIL,
 )
 
 logger = logging.getLogger(__name__)
 
-_LINE_API = "https://notify-api.line.me/api/notify"
-_MAX_LINE_LEN = 1000
+_TG_API = "https://api.telegram.org/bot{token}/sendMessage"
+_MAX_TG_LEN = 4096
 
 
 class Notifier:
     """
     推播通知器。
 
-    支援 LINE Notify 與 Email（SMTP）。
+    支援 Telegram Bot 與 Email（SMTP）。
     Token/密碼從 config.py 讀取（透過 .env 或 st.secrets）。
     """
 
     def __init__(self):
-        self.line_token = LINE_NOTIFY_TOKEN
+        self.tg_token = TELEGRAM_BOT_TOKEN
+        self.tg_chat_id = TELEGRAM_CHAT_ID
         self.smtp_host = SMTP_HOST
         self.smtp_port = SMTP_PORT
         self.smtp_user = SMTP_USER
         self.smtp_password = SMTP_PASSWORD
         self.alert_email = ALERT_EMAIL
 
-    # ── LINE Notify ────────────────────────────────────────────────────────────
+    # ── Telegram ───────────────────────────────────────────────────────────────
 
-    def send_line(self, message: str, image_url: Optional[str] = None) -> bool:
+    def send_telegram(self, message: str, chat_id: Optional[str] = None) -> bool:
         """
-        傳送 LINE Notify 訊息。
-        超過 1000 字自動截斷並附加說明。
+        透過 Telegram Bot API 傳送訊息。
+        chat_id 若 None，使用 config 中的 TELEGRAM_CHAT_ID。
+        超過 4096 字自動截斷。
         """
-        if not self.line_token:
-            logger.warning("LINE_NOTIFY_TOKEN 未設定，跳過推播")
+        if not self.tg_token:
+            logger.warning("TELEGRAM_BOT_TOKEN 未設定，跳過推播")
             return False
 
-        if len(message) > _MAX_LINE_LEN:
-            message = message[:_MAX_LINE_LEN - 20] + "...（完整報告見 Streamlit）"
+        target = chat_id or self.tg_chat_id
+        if not target:
+            logger.warning("TELEGRAM_CHAT_ID 未設定，跳過推播（向 Bot 傳 /start 後可取得）")
+            return False
 
-        data = {"message": message}
-        if image_url:
-            data["imageFullsize"] = image_url
-            data["imageThumbnail"] = image_url
+        if len(message) > _MAX_TG_LEN:
+            message = message[:_MAX_TG_LEN - 30] + "\n...（完整報告見 Streamlit）"
 
+        url = _TG_API.format(token=self.tg_token)
         try:
             resp = requests.post(
-                _LINE_API,
-                headers={"Authorization": f"Bearer {self.line_token}"},
-                data=data,
+                url,
+                json={"chat_id": target, "text": message},
                 timeout=10,
             )
             if resp.status_code == 200:
-                logger.info("LINE Notify 推播成功")
+                logger.info("Telegram 推播成功 → chat_id=%s", target)
                 return True
-            logger.warning("LINE Notify 推播失敗：%s %s", resp.status_code, resp.text)
+            logger.warning("Telegram 推播失敗：%s %s", resp.status_code, resp.text)
         except Exception as e:
-            logger.error("LINE Notify 推播異常：%s", e)
+            logger.error("Telegram 推播異常：%s", e)
         return False
 
     # ── Email ──────────────────────────────────────────────────────────────────
