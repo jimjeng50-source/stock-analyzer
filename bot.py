@@ -156,6 +156,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*/chain ai\\_server* → AI 伺服器供應鏈\n"
         "*/chain ev\\_components* → 電動車零組件\n"
         "*/revenue* → 本週即將公布月營收個股\n\n"
+        "━━━ 每日推薦 ━━━\n"
+        "*/recommend* → 今日精選股票推薦\n"
+        "*/recommend refresh* → 立即重新掃描全市場\n"
+        "*/recommend history* → 近期推薦績效摘要\n\n"
         "━━━ 設定 ━━━\n"
         "*/myid* → 查詢你的 Chat ID（用於啟用主動推播）\n\n"
         "資料來源：FinMind API + yfinance\n"
@@ -382,6 +386,124 @@ async def cmd_myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/recommend [refresh|history] — 今日推薦清單、強制重掃或歷史績效"""
+    arg = (context.args[0].lower() if context.args else "").strip()
+    chat_id = str(update.effective_chat.id)
+
+    # ── /recommend history ─────────────────────────────────────────────────────
+    if arg == "history":
+        wait_msg = await update.message.reply_text("⏳ 查詢近 7 日推薦績效...")
+        try:
+            loop = asyncio.get_event_loop()
+
+            def _run():
+                from screener.recommendation_db import RecommendationDB
+                db = RecommendationDB()
+                perf = db.get_performance_summary(n_days=30)
+                recent_df = db.get_recent_recommendations(n_days=7)
+                return perf, recent_df
+
+            perf, recent_df = await loop.run_in_executor(_executor, _run)
+            avg5 = f"{perf['avg_return_5d']:+.1f}%" if perf.get("avg_return_5d") is not None else "—"
+            avg20 = f"{perf['avg_return_20d']:+.1f}%" if perf.get("avg_return_20d") is not None else "—"
+            wr5 = f"{perf['win_rate_5d']*100:.0f}%" if perf.get("win_rate_5d") is not None else "—"
+            total = perf.get("total_recommendations", 0)
+            evaluated = perf.get("evaluated_count", 0)
+
+            msg = (
+                "📊 *近 30 日推薦績效摘要*\n\n"
+                f"平均 5 日報酬：{avg5}\n"
+                f"平均 20 日報酬：{avg20}\n"
+                f"5 日正報酬勝率：{wr5}\n"
+                f"總推薦次數：{total}　已評估：{evaluated}\n\n"
+            )
+            if not recent_df.empty:
+                msg += "━━━ 近 7 日推薦個股 ━━━\n"
+                for _, row in recent_df.iterrows():
+                    r5 = f"{row['return_5d_pct']:+.1f}%" if row.get("return_5d_pct") is not None else "待評估"
+                    msg += f"  {row['recommend_date']} #{row['rank']} {row['stock_id']} {row.get('stock_name','')} → 5日 {r5}\n"
+            await wait_msg.edit_text(msg, parse_mode="Markdown")
+        except Exception as e:
+            await wait_msg.edit_text(f"❌ 查詢失敗：{e}")
+        return
+
+    # ── /recommend refresh（僅自己可用）──────────────────────────────────────
+    if arg == "refresh":
+        from config import TELEGRAM_CHAT_ID
+        if TELEGRAM_CHAT_ID and chat_id != str(TELEGRAM_CHAT_ID):
+            await update.message.reply_text("❌ 此指令僅限管理員使用")
+            return
+        wait_msg = await update.message.reply_text(
+            "⏳ 正在執行全市場掃描（需數分鐘，請耐心等候）..."
+        )
+        try:
+            loop = asyncio.get_event_loop()
+
+            def _run():
+                from screener.recommender import DailyRecommender
+                return DailyRecommender().run(dry_run=False)
+
+            result = await loop.run_in_executor(_executor, _run)
+            if result.get("error"):
+                await wait_msg.edit_text(f"❌ 掃描失敗：{result['error']}")
+            else:
+                n = len(result["recommendations"])
+                await wait_msg.edit_text(
+                    result["message"][:4000] if len(result["message"]) > 4000 else result["message"]
+                )
+        except Exception as e:
+            logger.error(f"/recommend refresh 失敗：{e}")
+            await wait_msg.edit_text(f"❌ 掃描失敗：{e}")
+        return
+
+    # ── /recommend（預設：從 DB 讀今日推薦）─────────────────────────────────
+    wait_msg = await update.message.reply_text("⏳ 查詢今日推薦清單...")
+    try:
+        loop = asyncio.get_event_loop()
+
+        def _run():
+            from screener.recommendation_db import RecommendationDB
+            from datetime import date
+            db = RecommendationDB()
+            return db.get_recommendations(date.today())
+
+        recs = await loop.run_in_executor(_executor, _run)
+
+        if not recs:
+            await wait_msg.edit_text(
+                "📭 今日尚未執行掃描。\n\n"
+                "使用 `/recommend refresh` 立即掃描（需數分鐘）\n"
+                "或等候每日 17:30 自動推播",
+                parse_mode="Markdown",
+            )
+            return
+
+        medal = {1: "🥇", 2: "🥈", 3: "🥉"}
+        lines = [f"🏆 *今日推薦（{recs[0].get('recommend_date', '')}）*\n"]
+        for rec in recs:
+            rank = rec.get("rank", 0)
+            sid = rec["stock_id"]
+            name = rec.get("stock_name", sid)
+            score = rec.get("total_score") or 0
+            price = rec.get("current_price") or 0
+            r1 = rec.get("reason_1", "")
+            lines += [
+                f"{medal.get(rank, f'#{rank}')} *{sid} {name}*",
+                f"💰 NT${price:,.0f}｜評分 {score:.0f}/100",
+                f"✅ {r1}" if r1 else "",
+                "",
+            ]
+
+        lines.append("⚠️ 僅供學習參考，不構成投資建議")
+        msg = "\n".join(l for l in lines if l is not None)
+        await wait_msg.edit_text(msg[:4000], parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"/recommend 失敗：{e}")
+        await wait_msg.edit_text(f"❌ 查詢失敗：{e}")
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if text.isdigit() and 3 <= len(text) <= 6:
@@ -411,6 +533,8 @@ def main():
     app.add_handler(CommandHandler("eps", cmd_eps))
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("myid", cmd_myid))
+    # v4 新增指令
+    app.add_handler(CommandHandler("recommend", cmd_recommend))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("🤖 台股機器人已啟動，按 Ctrl+C 停止")

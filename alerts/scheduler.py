@@ -113,6 +113,69 @@ def run_scheduler():
         except Exception as e:
             logger.error("每日籌碼更新任務失敗：%s", e)
 
+    # ── 任務 5：每日選股掃描（週一至五 17:30）─────────────────────────────
+    from config import SCREENER_SCHEDULE_HOUR, SCREENER_SCHEDULE_MINUTE
+
+    @scheduler.scheduled_job(
+        "cron",
+        day_of_week="mon-fri",
+        hour=SCREENER_SCHEDULE_HOUR,
+        minute=SCREENER_SCHEDULE_MINUTE,
+        id="daily_recommendation_scan",
+    )
+    def daily_recommendation_scan():
+        """每個交易日盤後自動掃描並推播推薦。"""
+        try:
+            logger.info("開始每日選股掃描...")
+            from screener.recommender import DailyRecommender
+            from alerts.notifier import Notifier
+
+            recommender = DailyRecommender()
+            result = recommender.run(dry_run=False)
+
+            if result.get("error"):
+                logger.error("掃描失敗：%s", result["error"])
+                return
+
+            notifier = Notifier()
+            notifier.send_telegram(result["message"])
+            logger.info("推薦掃描完成，本日推薦 %d 支", len(result["recommendations"]))
+
+        except Exception as e:
+            logger.error("每日掃描例外：%s", e, exc_info=True)
+
+    # ── 任務 6：績效回填（每週一 09:30）──────────────────────────────────
+    @scheduler.scheduled_job("cron", day_of_week="mon", hour="9", minute="30", id="backfill_performance")
+    def backfill_performance():
+        """回填 5 日和 20 日後的實際股價，計算推薦績效。"""
+        try:
+            from screener.recommendation_db import RecommendationDB
+            from data.fetcher import DataFetcher
+            from datetime import date, timedelta
+
+            db = RecommendationDB()
+            fetcher = DataFetcher()
+            today = date.today()
+
+            for offset_days, col_label in [(5, "5d"), (20, "20d")]:
+                target_date = today - timedelta(days=offset_days + 2)  # 保守估計
+                recs = db.get_recommendations(target_date)
+                for rec in recs:
+                    sid = rec["stock_id"]
+                    try:
+                        price = fetcher.get_market_price(sid)
+                        if price:
+                            if col_label == "5d":
+                                db.update_performance(sid, target_date, price_5d=price)
+                            else:
+                                db.update_performance(sid, target_date, price_20d=price)
+                    except Exception as ex:
+                        logger.warning("回填 %s %s 失敗：%s", sid, col_label, ex)
+
+            logger.info("績效回填完成")
+        except Exception as e:
+            logger.error("績效回填任務失敗：%s", e)
+
     logger.info("排程器啟動（Asia/Taipei），按 Ctrl+C 停止")
     try:
         scheduler.start()
