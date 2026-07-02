@@ -21,7 +21,7 @@ def _today_tw():
 from data.fetcher import FinMindFetcher
 from factors import compute_chips, compute_technical, compute_fundamental, compute_momentum
 from models.scorer import Scorer
-from config import FINMIND_TOKEN, ANTHROPIC_API_KEY
+from config import get_runtime_config, save_local_config
 
 st.set_page_config(page_title="台股多因子評分系統", page_icon="📊",
                    layout="wide", initial_sidebar_state="expanded")
@@ -85,9 +85,9 @@ with st.sidebar:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 頁籤
 # ═══════════════════════════════════════════════════════════════════════════════
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
     "📊 個股分析", "🌐 總體資金面", "📈 回測驗證", "📚 因子說明", "🛡️ 風險監控",
-    "🎯 Forward EPS", "🔗 產業鏈分析", "📅 月營收追蹤", "🏆 每日推薦",
+    "🎯 Forward EPS", "🔗 產業鏈分析", "📅 月營收追蹤", "🏆 每日推薦", "⚙️ 設定",
 ])
 
 
@@ -1763,3 +1763,103 @@ with tab9:
 
     st.markdown("---")
     st.caption("⚠️ 本推薦由量化模型自動生成，僅供學習與研究參考，不構成任何投資建議。投資涉及風險，請自行評估。")
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Tab 10：設定
+# ───────────────────────────────────────────────────────────────────────────────
+with tab10:
+    st.markdown("## ⚙️ API 金鑰設定")
+    st.markdown(
+        "在這裡輸入你的 API 金鑰，儲存後立即生效（不需要重啟）。"
+        "金鑰存在伺服器本機的 `data/local_config.json`，**不會進入版本庫**。"
+    )
+
+    _KEY_META = [
+        {
+            "key": "FINMIND_TOKEN",
+            "label": "FinMind Token",
+            "help": "全市場掃描必填。至 finmindtrade.com 免費註冊取得。",
+            "required": True,
+        },
+        {
+            "key": "ANTHROPIC_API_KEY",
+            "label": "Anthropic API Key",
+            "help": "選填。設定後每日推薦會用 Claude 生成個股推薦理由。",
+            "required": False,
+        },
+        {
+            "key": "TELEGRAM_BOT_TOKEN",
+            "label": "Telegram Bot Token",
+            "help": "選填。設定後可推播每日推薦到 Telegram。",
+            "required": False,
+        },
+        {
+            "key": "TELEGRAM_CHAT_ID",
+            "label": "Telegram Chat ID",
+            "help": "選填。向你的 Bot 傳送 /myid 取得。",
+            "required": False,
+        },
+    ]
+
+    st.markdown("### 目前狀態")
+    _status_cols = st.columns(len(_KEY_META))
+    for _col, _m in zip(_status_cols, _KEY_META):
+        _val = get_runtime_config(_m["key"])
+        _icon = "✅" if _val else ("🔴" if _m["required"] else "⚪")
+        _col.metric(_m["label"], _icon + (" 已設定" if _val else " 未設定"))
+
+    st.markdown("---")
+    st.markdown("### 編輯金鑰")
+
+    with st.form("api_key_form"):
+        _inputs = {}
+        for _m in _KEY_META:
+            _cur = get_runtime_config(_m["key"])
+            _placeholder = "（已設定，輸入新值以覆蓋）" if _cur else "（未設定）"
+            _inputs[_m["key"]] = st.text_input(
+                f"{_m['label']}{'  ＊必填' if _m['required'] else '  （選填）'}",
+                value="",
+                placeholder=_placeholder,
+                type="password",
+                help=_m["help"],
+            )
+
+        _submitted = st.form_submit_button("💾 儲存", type="primary")
+        if _submitted:
+            _to_save = {k: v for k, v in _inputs.items() if v.strip()}
+            if _to_save:
+                try:
+                    save_local_config(_to_save)
+                    st.success(f"已儲存 {len(_to_save)} 個金鑰：{', '.join(_to_save.keys())}")
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"儲存失敗：{_e}")
+            else:
+                st.info("未填入任何值，無需儲存。")
+
+    st.markdown("---")
+    st.markdown("### 清除金鑰")
+    _clear_key = st.selectbox(
+        "選擇要清除的金鑰",
+        options=[""] + [_m["key"] for _m in _KEY_META],
+        format_func=lambda x: "（請選擇）" if x == "" else x,
+    )
+    if st.button("🗑️ 清除選取的金鑰", disabled=not _clear_key):
+        try:
+            import json as _json
+            with open("data/local_config.json", "r", encoding="utf-8") as _f:
+                _cfg = _json.load(_f)
+            _cfg.pop(_clear_key, None)
+            with open("data/local_config.json", "w", encoding="utf-8") as _f:
+                _json.dump(_cfg, _f, ensure_ascii=False, indent=2)
+            st.success(f"已清除 {_clear_key}")
+            st.rerun()
+        except Exception as _e:
+            st.error(f"清除失敗：{_e}")
+
+    st.markdown("---")
+    st.caption(
+        "💡 金鑰儲存在伺服器本機 `data/local_config.json`（已加入 .gitignore）。"
+        "若同時設定了環境變數（.env / Render 環境設定），local_config.json 優先。"
+    )
