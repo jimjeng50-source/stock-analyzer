@@ -72,6 +72,10 @@ class RevenueCalendar:
                     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            # migration：watchlist 加 source 欄位（manual=手動加入 / auto=每日推薦同步）
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(watchlist)")}
+            if "source" not in cols:
+                conn.execute("ALTER TABLE watchlist ADD COLUMN source TEXT DEFAULT 'manual'")
         logger.info("資料庫初始化完成：%s", self.db_path)
 
     # ── 追蹤清單管理 ─────────────────────────────────────────────────────────
@@ -88,9 +92,61 @@ class RevenueCalendar:
         """取得所有追蹤股票清單。"""
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT stock_id, stock_name FROM watchlist ORDER BY stock_id"
+                "SELECT stock_id, stock_name, source FROM watchlist ORDER BY stock_id"
             ).fetchall()
-        return [{"stock_id": r[0], "stock_name": r[1]} for r in rows]
+        return [
+            {"stock_id": r[0], "stock_name": r[1], "source": r[2] or "manual"}
+            for r in rows
+        ]
+
+    def sync_from_recommendations(self, n_days: int = 60) -> dict:
+        """
+        以「近 n_days 天每日推薦的個股」同步追蹤清單。
+
+        規則：
+        - 推薦股以 source='auto' 加入（已存在的手動股不變）
+        - 超出 60 天窗口的 auto 股自動移除（手動加入的保留）
+
+        Returns:
+            {"added": int, "removed": int, "total": int}
+        """
+        try:
+            from screener.recommendation_db import RecommendationDB
+            rec_df = RecommendationDB().get_recent_recommendations(n_days=n_days)
+        except Exception as e:
+            logger.warning("讀取推薦紀錄失敗，跳過同步：%s", e)
+            return {"added": 0, "removed": 0, "total": len(self.get_watchlist())}
+
+        rec_map = {}
+        if not rec_df.empty:
+            for _, row in rec_df.iterrows():
+                sid = str(row["stock_id"])
+                rec_map[sid] = str(row.get("stock_name") or sid)
+
+        added = removed = 0
+        with sqlite3.connect(self.db_path) as conn:
+            existing = {
+                r[0]: (r[1] or "manual")
+                for r in conn.execute("SELECT stock_id, source FROM watchlist")
+            }
+            # 移除窗口外的 auto 股
+            for sid, source in existing.items():
+                if source == "auto" and sid not in rec_map:
+                    conn.execute("DELETE FROM watchlist WHERE stock_id=?", (sid,))
+                    removed += 1
+            # 加入新推薦股
+            for sid, name in rec_map.items():
+                if sid not in existing:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO watchlist(stock_id, stock_name, source) VALUES (?, ?, 'auto')",
+                        (sid, name),
+                    )
+                    added += 1
+            total = conn.execute("SELECT COUNT(*) FROM watchlist").fetchone()[0]
+
+        if added or removed:
+            logger.info("追蹤清單同步：+%d / -%d（共 %d）", added, removed, total)
+        return {"added": added, "removed": removed, "total": total}
 
     # ── 歷史模式更新 ─────────────────────────────────────────────────────────
 
