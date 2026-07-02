@@ -1556,8 +1556,23 @@ with tab8:
             _rc_ok = False
 
         if _rc_ok:
+            # ── 自動同步：近 60 天每日推薦個股 ────────────────────────────
+            try:
+                _sync_stats = _rc.sync_from_recommendations(n_days=60)
+                if _sync_stats["added"] or _sync_stats["removed"]:
+                    st.caption(
+                        f"🔄 已從每日推薦同步追蹤清單（+{_sync_stats['added']} / "
+                        f"-{_sync_stats['removed']}，共 {_sync_stats['total']} 支）"
+                    )
+            except Exception:
+                pass
+
             # ── 追蹤清單管理 ─────────────────────────────────────────────
             with st.expander("⚙️ 追蹤清單管理", expanded=False):
+                st.caption(
+                    "追蹤清單 = 近 60 天每日推薦個股（自動同步，"
+                    "超出 60 天窗口自動移除）＋手動加入的個股（永久保留）。"
+                )
                 add_col, del_col = st.columns(2)
                 with add_col:
                     new_stock_id = st.text_input("加入追蹤", placeholder="股票代號（如 2330）", key="rc_add")
@@ -1572,9 +1587,15 @@ with tab8:
                 if watchlist:
                     st.markdown(f"**目前追蹤 {len(watchlist)} 檔個股**")
                     wl_df = pd.DataFrame(watchlist)
-                    st.dataframe(wl_df, use_container_width=True, hide_index=True)
+                    if "source" in wl_df.columns:
+                        wl_df["source"] = wl_df["source"].map(
+                            {"auto": "📊 每日推薦", "manual": "✍️ 手動"}
+                        ).fillna("✍️ 手動")
+                    st.dataframe(wl_df.rename(columns={
+                        "stock_id": "代號", "stock_name": "名稱", "source": "來源",
+                    }), use_container_width=True, hide_index=True)
                 else:
-                    st.info("追蹤清單為空，請加入個股")
+                    st.info("追蹤清單為空（執行每日掃描後會自動填入推薦個股）")
 
             # ── 即將公布月營收 ────────────────────────────────────────────
             st.markdown("### 📆 本週即將公布月營收")
@@ -1726,6 +1747,13 @@ with tab9:
                 f"<div style='color:#ff7b72;margin:4px 0'>🔥 熱門：{hot_str}</div>"
                 if hot_str else ""
             )
+            _feps = rec.get("forward_eps")
+            _feps_g = rec.get("eps_growth_pct", rec.get("eps_growth_rate"))
+            if _feps is not None:
+                _g_str = f"（成長 {_feps_g:+.0f}%）" if _feps_g is not None else ""
+                feps_str = f"{_feps:.2f} 元{_g_str}"
+            else:
+                feps_str = "—"
 
             st.markdown(
                 f"""
@@ -1735,7 +1763,7 @@ with tab9:
     <span style="background:{score_color};color:#0d1117;border-radius:6px;padding:2px 10px;font-weight:700">評分 {score:.0f}/100</span>
   </div>
   <div style="color:#8b949e;margin-bottom:8px">
-    現價 NT${price:,.0f}　|　目標價 {tp_str}
+    現價 NT${price:,.0f}　|　目標價 {tp_str}　|　Forward EPS {feps_str}
   </div>
   {hot_html}
   <div style="margin:6px 0">✅ {r1 or "—"}</div>
@@ -1766,10 +1794,11 @@ with tab9:
     recent_df = _rec_db.get_recent_recommendations(n_days=30)
     if not recent_df.empty:
         st.markdown("#### 近 30 日推薦記錄")
-        show_cols = [c for c in ["recommend_date","rank","stock_id","stock_name","total_score","current_price","return_5d_pct","return_20d_pct","hot_tags"] if c in recent_df.columns]
+        show_cols = [c for c in ["recommend_date","rank","stock_id","stock_name","total_score","current_price","forward_eps","eps_growth_pct","return_5d_pct","return_20d_pct","hot_tags"] if c in recent_df.columns]
         st.dataframe(recent_df[show_cols].rename(columns={
             "recommend_date": "日期", "rank": "排名", "stock_id": "代號",
             "stock_name": "名稱", "total_score": "評分", "current_price": "推薦價",
+            "forward_eps": "Forward EPS", "eps_growth_pct": "EPS成長%",
             "return_5d_pct": "5日報酬%", "return_20d_pct": "20日報酬%",
             "hot_tags": "熱門標記",
         }), use_container_width=True, hide_index=True)

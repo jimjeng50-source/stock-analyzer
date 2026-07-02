@@ -162,6 +162,8 @@ class DailyRecommender:
                     "key_reasons": reasons,
                     "target_price_base": deep.get("target_price_base"),
                     "upside_pct": deep.get("upside_pct"),
+                    "forward_eps": deep.get("forward_eps"),
+                    "eps_growth_rate": deep.get("eps_growth_rate"),
                     "risk_warning": self._generate_risk_warning(stock_data),
                     "industry": row.get("industry", ""),
                     "score_breakdown": {
@@ -199,12 +201,26 @@ class DailyRecommender:
                 self.db.save_recommendations(today, recommendations)
                 self.db.save_scan_log(today, scan_summary)
                 logger.info("推薦紀錄已儲存（%d 支）", len(recommendations))
+                self._sync_revenue_watchlist()
 
         except Exception as e:
             logger.error("每日推薦流程異常：%s", e, exc_info=True)
             result["error"] = f"推薦流程異常：{str(e)}"
 
         return result
+
+    def _sync_revenue_watchlist(self) -> None:
+        """掃描完成後，把近 60 天推薦股同步進月營收追蹤清單。"""
+        try:
+            from alerts.revenue_calendar import RevenueCalendar
+            calendar = RevenueCalendar(self.data_fetcher)
+            stats = calendar.sync_from_recommendations(n_days=60)
+            logger.info(
+                "月營收追蹤清單已同步（+%d / -%d，共 %d 支）",
+                stats["added"], stats["removed"], stats["total"],
+            )
+        except Exception as e:
+            logger.warning("月營收追蹤清單同步失敗：%s", e)
 
     # ── Phase 1.5：熱門股偵測 ──────────────────────────────────────────────────
 
@@ -417,6 +433,11 @@ class DailyRecommender:
                 lines.append(f"🔥 熱門：{'、'.join(hot_tags)}")
             if tp and upside is not None:
                 lines.append(f"🎯 目標價：{tp:.0f} 元（{upside:+.0f}%）")
+            feps = rec.get("forward_eps")
+            eps_growth = rec.get("eps_growth_rate")
+            if feps is not None:
+                growth_str = f"（成長 {eps_growth:+.0f}%）" if eps_growth is not None else ""
+                lines.append(f"📈 Forward EPS：{feps:.2f} 元{growth_str}")
             for r in reasons:
                 lines.append(f"✅ {r}")
             if risk:

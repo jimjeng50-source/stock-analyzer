@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS daily_recommendations (
     price_60d         REAL,
     return_60d_pct    REAL,
     hot_tags          TEXT,
+    forward_eps       REAL,
+    eps_growth_pct    REAL,
     UNIQUE(recommend_date, stock_id)
 );
 """
@@ -57,6 +59,8 @@ _MIGRATION_COLUMNS = {
     "price_60d": "REAL",
     "return_60d_pct": "REAL",
     "hot_tags": "TEXT",
+    "forward_eps": "REAL",
+    "eps_growth_pct": "REAL",
 }
 
 _CREATE_SCAN_LOGS = """
@@ -126,12 +130,14 @@ class RecommendationDB:
             (recommend_date, rank, stock_id, stock_name, total_score, recommendation,
              current_price, reason_1, reason_2, reason_3, risk_warning,
              target_price, upside_pct, industry,
-             chips_score, fundamental_score, technical_score, momentum_score, hot_tags)
+             chips_score, fundamental_score, technical_score, momentum_score, hot_tags,
+             forward_eps, eps_growth_pct)
         VALUES
             (:recommend_date, :rank, :stock_id, :stock_name, :total_score, :recommendation,
              :current_price, :reason_1, :reason_2, :reason_3, :risk_warning,
              :target_price, :upside_pct, :industry,
-             :chips_score, :fundamental_score, :technical_score, :momentum_score, :hot_tags)
+             :chips_score, :fundamental_score, :technical_score, :momentum_score, :hot_tags,
+             :forward_eps, :eps_growth_pct)
         """
         rows = []
         for rec in recommendations:
@@ -157,6 +163,8 @@ class RecommendationDB:
                 "technical_score": score_bd.get("technical_score"),
                 "momentum_score": score_bd.get("momentum_score"),
                 "hot_tags": ", ".join(rec.get("hot_tags", [])) or None,
+                "forward_eps": rec.get("forward_eps"),
+                "eps_growth_pct": rec.get("eps_growth_rate"),
             })
         with self._conn() as conn:
             conn.executemany(sql, rows)
