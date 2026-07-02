@@ -97,3 +97,57 @@ class TestUniverseManager:
         assert "9999" in stock_ids
         assert "2330" in stock_ids
         mock_price.assert_called_once_with("9999")
+
+    # ── _fetch_market_snapshot fallback ────────────────────────────────────────
+
+    def test_snapshot_falls_back_to_twse_when_finmind_unavailable(self):
+        """FinMind 快照失敗時，改用 TWSE/TPEX 官方 OpenAPI。"""
+        mgr = UniverseManager()
+        twse_df = pd.DataFrame([
+            {"stock_id": "2330", "close": 850.0,
+             "Trading_Volume": 30_000_000, "Trading_money": 25_500_000_000},
+        ])
+        with patch.object(mgr, "_fetch_finmind_snapshot", return_value=None), \
+             patch.object(mgr, "_fetch_twse_tpex_snapshot", return_value=twse_df) as mock_twse:
+            result = mgr._fetch_market_snapshot()
+        mock_twse.assert_called_once()
+        assert result is not None
+        assert list(result["stock_id"]) == ["2330"]
+
+    def test_twse_tpex_snapshot_parses_and_cleans(self):
+        """TWSE/TPEX 回應：千分位逗號和 '-' 值被正確清理，close<=0 被排除。"""
+        mgr = UniverseManager()
+
+        twse_payload = [
+            {"Code": "2330", "Name": "台積電", "ClosingPrice": "850.00",
+             "TradeVolume": "30,000,000", "TradeValue": "25,500,000,000"},
+            {"Code": "9998", "Name": "無成交", "ClosingPrice": "-",
+             "TradeVolume": "-", "TradeValue": "-"},
+        ]
+        tpex_payload = [
+            {"SecuritiesCompanyCode": "5483", "CompanyName": "中美晶", "Close": "180.50",
+             "TradingShares": "5,000,000", "TransactionAmount": "902,500,000"},
+        ]
+
+        def fake_get(url, **kwargs):
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = twse_payload if "twse" in url else tpex_payload
+            return resp
+
+        with patch("screener.universe.requests.get", side_effect=fake_get):
+            snap = mgr._fetch_twse_tpex_snapshot()
+
+        assert snap is not None
+        ids = set(snap["stock_id"])
+        assert ids == {"2330", "5483"}          # "-" 無成交列被排除
+        row = snap[snap["stock_id"] == "2330"].iloc[0]
+        assert row["close"] == 850.0
+        assert row["Trading_Volume"] == 30_000_000
+
+    def test_twse_tpex_snapshot_returns_none_when_both_fail(self):
+        """兩個官方 API 都失敗時回傳 None。"""
+        mgr = UniverseManager()
+        with patch("screener.universe.requests.get", side_effect=Exception("network down")):
+            snap = mgr._fetch_twse_tpex_snapshot()
+        assert snap is None

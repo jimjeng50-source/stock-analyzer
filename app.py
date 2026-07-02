@@ -1835,6 +1835,7 @@ with tab10:
                     st.error(f"❌ 股票清單請求異常：{_e}")
 
                 # 測試 2：全市場單日快照（掃描核心）
+                _fm_snapshot_ok = False
                 try:
                     from datetime import date as _dt, timedelta as _td
                     _found = False
@@ -1847,18 +1848,31 @@ with tab10:
                         _d = _r.json()
                         _n = len(_d.get("data") or [])
                         if _d.get("status") == 200 and _n > 0:
-                            st.success(f"✅ 全市場快照 OK（{_day}，{_n} 筆）— 掃描應可正常運作")
+                            st.success(f"✅ FinMind 全市場快照 OK（{_day}，{_n} 筆）")
                             _found = True
+                            _fm_snapshot_ok = True
                             break
                         _msg = str(_d.get("msg", ""))
-                        if _msg and ("quota" in _msg.lower() or "permission" in _msg.lower() or "level" in _msg.lower()):
-                            st.error(f"❌ 全市場快照被拒 — msg={_msg}（可能是 API 等級/配額限制）")
+                        if _msg and any(k in _msg.lower() for k in ("quota", "permission", "level")):
+                            st.warning(f"⚠️ FinMind 快照不可用（{_msg[:60]}...）— 掃描會自動改用 TWSE/TPEX 官方資料")
                             _found = True
                             break
                     if not _found:
-                        st.warning("⚠️ 近 7 天都取不到快照資料（可能是假日連休或 API 回應異常）")
+                        st.warning("⚠️ FinMind 近 7 天都取不到快照資料")
                 except Exception as _e:
-                    st.error(f"❌ 快照請求異常：{_e}")
+                    st.warning(f"⚠️ FinMind 快照請求異常：{_e}")
+
+                # 測試 3：TWSE/TPEX 官方 OpenAPI fallback
+                if not _fm_snapshot_ok:
+                    try:
+                        from screener.universe import UniverseManager as _UM
+                        _snap = _UM()._fetch_twse_tpex_snapshot()
+                        if _snap is not None and not _snap.empty:
+                            st.success(f"✅ TWSE/TPEX 官方快照 OK（{len(_snap)} 筆）— 掃描應可正常運作")
+                        else:
+                            st.error("❌ TWSE/TPEX 官方快照也失敗 — 掃描無法運作，請稍後重試")
+                    except Exception as _e:
+                        st.error(f"❌ TWSE/TPEX 快照異常：{_e}")
 
     st.markdown("---")
     st.markdown("### 編輯金鑰")
