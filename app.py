@@ -1813,6 +1813,53 @@ with tab10:
         _icon = "✅" if _val else ("🔴" if _m["required"] else "⚪")
         _col.metric(_m["label"], _icon + (" 已設定" if _val else " 未設定"))
 
+    # ── FinMind 連線診斷 ──────────────────────────────────────────────────────
+    if st.button("🔌 測試 FinMind 連線"):
+        import requests as _rq
+        _tok = get_runtime_config("FINMIND_TOKEN")
+        if not _tok:
+            st.error("FINMIND_TOKEN 未設定 — 請先在下方輸入並儲存，或設定 Streamlit Secrets。")
+        else:
+            _api = "https://api.finmindtrade.com/api/v4/data"
+            with st.spinner("測試中..."):
+                # 測試 1：股票清單
+                try:
+                    _r = _rq.get(_api, params={"dataset": "TaiwanStockInfo", "token": _tok}, timeout=30)
+                    _d = _r.json()
+                    _n = len(_d.get("data") or [])
+                    if _d.get("status") == 200 and _n > 0:
+                        st.success(f"✅ 股票清單 OK（{_n} 筆）")
+                    else:
+                        st.error(f"❌ 股票清單失敗 — HTTP {_r.status_code}, status={_d.get('status')}, msg={_d.get('msg', '')}")
+                except Exception as _e:
+                    st.error(f"❌ 股票清單請求異常：{_e}")
+
+                # 測試 2：全市場單日快照（掃描核心）
+                try:
+                    from datetime import date as _dt, timedelta as _td
+                    _found = False
+                    for _off in range(7):
+                        _day = (_dt.today() - _td(days=_off)).strftime("%Y-%m-%d")
+                        _r = _rq.get(_api, params={
+                            "dataset": "TaiwanStockPrice",
+                            "start_date": _day, "end_date": _day, "token": _tok,
+                        }, timeout=60)
+                        _d = _r.json()
+                        _n = len(_d.get("data") or [])
+                        if _d.get("status") == 200 and _n > 0:
+                            st.success(f"✅ 全市場快照 OK（{_day}，{_n} 筆）— 掃描應可正常運作")
+                            _found = True
+                            break
+                        _msg = str(_d.get("msg", ""))
+                        if _msg and ("quota" in _msg.lower() or "permission" in _msg.lower() or "level" in _msg.lower()):
+                            st.error(f"❌ 全市場快照被拒 — msg={_msg}（可能是 API 等級/配額限制）")
+                            _found = True
+                            break
+                    if not _found:
+                        st.warning("⚠️ 近 7 天都取不到快照資料（可能是假日連休或 API 回應異常）")
+                except Exception as _e:
+                    st.error(f"❌ 快照請求異常：{_e}")
+
     st.markdown("---")
     st.markdown("### 編輯金鑰")
 
