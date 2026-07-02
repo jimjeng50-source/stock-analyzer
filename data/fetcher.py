@@ -13,7 +13,7 @@ try:
 except ImportError:
     _HAS_YFINANCE = False
 
-from config import FINMIND_TOKEN, DEFAULT_DAYS, FUNDAMENTAL_DAYS
+from config import DEFAULT_DAYS, FUNDAMENTAL_DAYS, get_runtime_config
 from utils.tz import now_tw
 
 _FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
@@ -25,7 +25,7 @@ class FinMindFetcher:
     def __init__(self, stock_id: str, days: int = DEFAULT_DAYS):
         self.stock_id = stock_id
         self.days = days
-        self.use_finmind = bool(FINMIND_TOKEN)
+        self.use_finmind = bool(get_runtime_config("FINMIND_TOKEN"))
         self._end = now_tw()
         self._start_short = (self._end - timedelta(days=days)).strftime("%Y-%m-%d")
         self._start_long = (self._end - timedelta(days=FUNDAMENTAL_DAYS)).strftime("%Y-%m-%d")
@@ -43,7 +43,7 @@ class FinMindFetcher:
                     "data_id": self.stock_id,
                     "start_date": start,
                     "end_date": self._end_str,
-                    "token": FINMIND_TOKEN,
+                    "token": get_runtime_config("FINMIND_TOKEN"),
                 },
                 timeout=30,
             )
@@ -171,7 +171,7 @@ class DataFetcher:
         start: str,
         end: Optional[str] = None,
     ) -> pd.DataFrame:
-        if not FINMIND_TOKEN:
+        if not get_runtime_config("FINMIND_TOKEN"):
             return pd.DataFrame()
         if end is None:
             end = now_tw().strftime("%Y-%m-%d")
@@ -183,7 +183,7 @@ class DataFetcher:
                     "data_id": stock_id,
                     "start_date": start,
                     "end_date": end,
-                    "token": FINMIND_TOKEN,
+                    "token": get_runtime_config("FINMIND_TOKEN"),
                 },
                 timeout=30,
             )

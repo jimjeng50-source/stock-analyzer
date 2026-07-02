@@ -21,8 +21,8 @@ from config import (
     SCREENER_TOP_N,
     SCREENER_QUICK_SCORE_THRESHOLD,
     SCREENER_MIN_RECOMMEND_SCORE,
-    ANTHROPIC_API_KEY,
     CLAUDE_MODEL,
+    get_runtime_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -246,7 +246,7 @@ class DailyRecommender:
         self, stock_data: dict, score_result: dict
     ) -> list:
         """呼叫 Claude API 生成 3 條推薦理由。失敗時回傳 fallback。"""
-        if not ANTHROPIC_API_KEY:
+        if not get_runtime_config("ANTHROPIC_API_KEY"):
             return self._fallback_reasons(score_result)
 
         try:
@@ -275,7 +275,7 @@ class DailyRecommender:
                 "- 不要有其他文字或 markdown\n"
             )
 
-            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            client = anthropic.Anthropic(api_key=get_runtime_config("ANTHROPIC_API_KEY"))
             message = client.messages.create(
                 model=CLAUDE_MODEL,
                 max_tokens=300,

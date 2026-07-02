@@ -19,7 +19,6 @@ import pandas as pd
 import requests
 
 from config import (
-    FINMIND_TOKEN,
     SCREENER_UNIVERSE_SIZE,
     FILTER_MIN_MARKET_CAP_BILLION,
     FILTER_MIN_AVG_VOLUME_K,
@@ -27,6 +26,7 @@ from config import (
     FILTER_MAX_PRICE,
     FILTER_EXCLUDE_ETF,
     DEFAULT_DAYS,
+    get_runtime_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -133,7 +133,7 @@ class UniverseManager:
         try:
             params = {
                 "dataset": "TaiwanStockInfo",
-                "token": FINMIND_TOKEN or "",
+                "token": get_runtime_config("FINMIND_TOKEN"),
             }
             resp = requests.get(_FINMIND_API, params=params, timeout=30)
             resp.raise_for_status()
@@ -281,7 +281,7 @@ class UniverseManager:
                         "dataset": "TaiwanStockPrice",
                         "start_date": day,
                         "end_date": day,
-                        "token": FINMIND_TOKEN or "",
+                        "token": get_runtime_config("FINMIND_TOKEN"),
                     },
                     timeout=60,
                 )
@@ -316,7 +316,7 @@ class UniverseManager:
                 "data_id": stock_id,
                 "start_date": start,
                 "end_date": end,
-                "token": FINMIND_TOKEN or "",
+                "token": get_runtime_config("FINMIND_TOKEN"),
             }
             resp = requests.get(_FINMIND_API, params=params, timeout=15)
             data = resp.json()

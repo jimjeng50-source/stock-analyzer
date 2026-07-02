@@ -12,8 +12,8 @@ from typing import Optional
 import requests
 
 from config import (
-    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
     SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, ALERT_EMAIL,
+    get_runtime_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,8 +31,8 @@ class Notifier:
     """
 
     def __init__(self):
-        self.tg_token = TELEGRAM_BOT_TOKEN
-        self.tg_chat_id = TELEGRAM_CHAT_ID
+        self.tg_token = get_runtime_config("TELEGRAM_BOT_TOKEN")
+        self.tg_chat_id = get_runtime_config("TELEGRAM_CHAT_ID")
         self.smtp_host = SMTP_HOST
         self.smtp_port = SMTP_PORT
         self.smtp_user = SMTP_USER

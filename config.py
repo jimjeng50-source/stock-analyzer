@@ -1,7 +1,10 @@
+import json
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_LOCAL_CONFIG_PATH = "data/local_config.json"
 
 
 def _get_secret(key: str, default: str = "") -> str:
@@ -18,6 +21,36 @@ def _get_secret(key: str, default: str = "") -> str:
         return st.secrets.get(key, default)
     except Exception:
         return default
+
+
+def get_runtime_config(key: str, default: str = "") -> str:
+    """
+    在執行時（非模組載入時）讀取設定值。
+    優先序：data/local_config.json → 環境變數 → .env → st.secrets
+    供需要動態讀取的場景使用（例如透過 Streamlit 設定頁面更新 API key）。
+    """
+    try:
+        with open(_LOCAL_CONFIG_PATH, "r", encoding="utf-8") as f:
+            local = json.load(f)
+        val = local.get(key, "")
+        if val:
+            return str(val)
+    except Exception:
+        pass
+    return _get_secret(key, default)
+
+
+def save_local_config(updates: dict) -> None:
+    """將 API key 更新寫入 data/local_config.json。"""
+    os.makedirs(os.path.dirname(_LOCAL_CONFIG_PATH), exist_ok=True)
+    try:
+        with open(_LOCAL_CONFIG_PATH, "r", encoding="utf-8") as f:
+            existing = json.load(f)
+    except Exception:
+        existing = {}
+    existing.update(updates)
+    with open(_LOCAL_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(existing, f, ensure_ascii=False, indent=2)
 
 
 FINMIND_TOKEN = _get_secret("FINMIND_TOKEN")
