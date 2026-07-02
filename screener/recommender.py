@@ -85,12 +85,16 @@ class DailyRecommender:
             logger.info("Phase 1: 建立候選股票池...")
             universe_df = self.universe_mgr.get_universe()
             universe_df = self.universe_mgr.merge_with_custom(universe_df)
-            universe_count = len(universe_df)
-            logger.info("候選池：%d 支", universe_count)
 
             if universe_df.empty:
                 result["error"] = "無法取得股票清單"
                 return result
+
+            # Phase 1.5 — 熱門股偵測（籌碼/社群/量能），併入候選池並註記來源
+            hot_tags_map = self._detect_hot_stocks(universe_df)
+            universe_df = self._merge_hot_stocks(universe_df, hot_tags_map)
+            universe_count = len(universe_df)
+            logger.info("候選池：%d 支（含 %d 支熱門股）", universe_count, len(hot_tags_map))
 
             # Phase 2 — 快速過濾
             logger.info("Phase 2: 快速過濾...")
@@ -166,6 +170,7 @@ class DailyRecommender:
                         "technical_score": row.get("technical_score"),
                         "momentum_score": row.get("momentum_score"),
                     },
+                    "hot_tags": hot_tags_map.get(sid, []),
                 }
                 recommendations.append(rec)
 
@@ -200,6 +205,41 @@ class DailyRecommender:
             result["error"] = f"推薦流程異常：{str(e)}"
 
         return result
+
+    # ── Phase 1.5：熱門股偵測 ──────────────────────────────────────────────────
+
+    def _detect_hot_stocks(self, universe_df: pd.DataFrame) -> dict:
+        """偵測熱門股（籌碼/社群/量能）。失敗時回傳空 dict，不影響主流程。"""
+        try:
+            from screener.hot_stocks import HotStockDetector
+            return HotStockDetector().detect_all(universe_df)
+        except Exception as e:
+            logger.warning("熱門股偵測失敗：%s", e)
+            return {}
+
+    def _merge_hot_stocks(self, universe_df: pd.DataFrame, hot_tags_map: dict) -> pd.DataFrame:
+        """把不在候選池中的熱門股追加進去（與自訂名單同樣待遇）。"""
+        if not hot_tags_map:
+            return universe_df
+        existing = set(universe_df["stock_id"].astype(str).tolist())
+        missing = [sid for sid in hot_tags_map if sid not in existing]
+        if not missing:
+            return universe_df
+
+        extra_rows = []
+        for sid in missing:
+            extra_rows.append({
+                "stock_id": sid,
+                "stock_name": sid,
+                "market": "HOT",
+                "industry": "熱門追加",
+                "market_cap_b": float("nan"),
+                "avg_volume_k": float("nan"),
+                "last_price": float("nan"),
+            })
+        merged = pd.concat([universe_df, pd.DataFrame(extra_rows)], ignore_index=True)
+        logger.info("熱門股追加 %d 支進候選池", len(missing))
+        return merged
 
     # ── Phase 4：深度分析 ──────────────────────────────────────────────────────
 
@@ -372,6 +412,9 @@ class DailyRecommender:
 
             lines += ["", f"{icon} {sid} {name}"]
             lines.append(f"💰 {price:.0f} 元｜評分 {score:.0f}/100")
+            hot_tags = rec.get("hot_tags", [])
+            if hot_tags:
+                lines.append(f"🔥 熱門：{'、'.join(hot_tags)}")
             if tp and upside is not None:
                 lines.append(f"🎯 目標價：{tp:.0f} 元（{upside:+.0f}%）")
             for r in reasons:

@@ -22,11 +22,16 @@ _FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 class FinMindFetcher:
     """從 FinMind 取得台股資料，無 Token 時以 yfinance 取得股價替代。"""
 
-    def __init__(self, stock_id: str, days: int = DEFAULT_DAYS):
+    def __init__(self, stock_id: str, days: int = DEFAULT_DAYS, as_of: Optional[str] = None):
+        """
+        Args:
+            as_of: "YYYY-MM-DD"。指定時，所有資料以該日為截止點
+                   （歷史回溯評估用，確保不引入未來資料）。
+        """
         self.stock_id = stock_id
         self.days = days
         self.use_finmind = bool(get_runtime_config("FINMIND_TOKEN"))
-        self._end = now_tw()
+        self._end = datetime.strptime(as_of, "%Y-%m-%d") if as_of else now_tw()
         self._start_short = (self._end - timedelta(days=days)).strftime("%Y-%m-%d")
         self._start_long = (self._end - timedelta(days=FUNDAMENTAL_DAYS)).strftime("%Y-%m-%d")
         self._end_str = self._end.strftime("%Y-%m-%d")

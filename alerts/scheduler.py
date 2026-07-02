@@ -147,7 +147,7 @@ def run_scheduler():
     # ── 任務 6：績效回填（每週一 09:30）──────────────────────────────────
     @scheduler.scheduled_job("cron", day_of_week="mon", hour="9", minute="30", id="backfill_performance")
     def backfill_performance():
-        """回填 5 日和 20 日後的實際股價，計算推薦績效。"""
+        """回填 5 / 20 / 60 日後的實際股價，計算推薦績效。"""
         try:
             from screener.recommendation_db import RecommendationDB
             from data.fetcher import DataFetcher
@@ -157,7 +157,7 @@ def run_scheduler():
             fetcher = DataFetcher()
             today = date.today()
 
-            for offset_days, col_label in [(5, "5d"), (20, "20d")]:
+            for offset_days, col_label in [(5, "5d"), (20, "20d"), (60, "60d")]:
                 target_date = today - timedelta(days=offset_days + 2)  # 保守估計
                 recs = db.get_recommendations(target_date)
                 for rec in recs:
@@ -165,10 +165,9 @@ def run_scheduler():
                     try:
                         price = fetcher.get_market_price(sid)
                         if price:
-                            if col_label == "5d":
-                                db.update_performance(sid, target_date, price_5d=price)
-                            else:
-                                db.update_performance(sid, target_date, price_20d=price)
+                            db.update_performance(
+                                sid, target_date, **{f"price_{col_label}": price}
+                            )
                     except Exception as ex:
                         logger.warning("回填 %s %s 失敗：%s", sid, col_label, ex)
 
