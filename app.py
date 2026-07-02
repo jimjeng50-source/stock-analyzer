@@ -1713,10 +1713,19 @@ with tab9:
             r2 = rec.get("reason_2") or (rec.get("key_reasons", [None, None])[1] if isinstance(rec.get("key_reasons"), list) and len(rec.get("key_reasons", [])) > 1 else "")
             r3 = rec.get("reason_3") or (rec.get("key_reasons", [None, None, None])[2] if isinstance(rec.get("key_reasons"), list) and len(rec.get("key_reasons", [])) > 2 else "")
             risk = rec.get("risk_warning", "")
+            hot_raw = rec.get("hot_tags")
+            if isinstance(hot_raw, list):
+                hot_str = "、".join(hot_raw)
+            else:
+                hot_str = str(hot_raw) if hot_raw else ""
 
             medal = medal_map.get(rank, f"#{rank}")
             score_color = "#6bcb77" if score >= 75 else ("#ffd166" if score >= 60 else "#ff4b4b")
             tp_str = f"NT${tp:,.0f}（{upside:+.0f}%）" if (tp and upside is not None) else "—"
+            hot_html = (
+                f"<div style='color:#ff7b72;margin:4px 0'>🔥 熱門：{hot_str}</div>"
+                if hot_str else ""
+            )
 
             st.markdown(
                 f"""
@@ -1728,6 +1737,7 @@ with tab9:
   <div style="color:#8b949e;margin-bottom:8px">
     現價 NT${price:,.0f}　|　目標價 {tp_str}
   </div>
+  {hot_html}
   <div style="margin:6px 0">✅ {r1 or "—"}</div>
   <div style="margin:6px 0">✅ {r2 or "—"}</div>
   <div style="margin:6px 0">✅ {r3 or "—"}</div>
@@ -1756,14 +1766,100 @@ with tab9:
     recent_df = _rec_db.get_recent_recommendations(n_days=30)
     if not recent_df.empty:
         st.markdown("#### 近 30 日推薦記錄")
-        show_cols = [c for c in ["recommend_date","rank","stock_id","stock_name","total_score","current_price","return_5d_pct","return_20d_pct"] if c in recent_df.columns]
+        show_cols = [c for c in ["recommend_date","rank","stock_id","stock_name","total_score","current_price","return_5d_pct","return_20d_pct","hot_tags"] if c in recent_df.columns]
         st.dataframe(recent_df[show_cols].rename(columns={
             "recommend_date": "日期", "rank": "排名", "stock_id": "代號",
             "stock_name": "名稱", "total_score": "評分", "current_price": "推薦價",
             "return_5d_pct": "5日報酬%", "return_20d_pct": "20日報酬%",
+            "hot_tags": "熱門標記",
         }), use_container_width=True, hide_index=True)
     else:
         st.info("尚無歷史推薦記錄（每日掃描後自動填入）")
+
+    st.markdown("---")
+
+    # ── 60 日推薦正確率報告 ───────────────────────────────────────────────────
+    st.markdown("### 📐 推薦正確率報告（60 日回溯）")
+    st.markdown(
+        "以每日推薦**前 3 名**為樣本，對照推薦日 60 天後的實際股價，"
+        "計算報酬率與正確率（正報酬 = 正確）。"
+    )
+
+    from screener.historical_eval import evaluate_60d_accuracy
+
+    _acc = evaluate_60d_accuracy(_rec_db, top_k=3)
+    if _acc["overall"]:
+        _o = _acc["overall"]
+        a1, a2, a3, a4 = st.columns(4)
+        a1.metric("60 日平均報酬", f"{_o['avg_return_pct']:+.1f}%")
+        a2.metric("60 日正確率", f"{_o['win_rate']*100:.0f}%")
+        a3.metric("已評估筆數", str(_o["evaluated"]))
+        a4.metric("涵蓋推薦日數", str(_o["dates"]))
+
+        _acc_df = _acc["by_date"]
+        st.dataframe(_acc_df.rename(columns={
+            "recommend_date": "推薦日", "rank": "排名", "stock_id": "代號",
+            "stock_name": "名稱", "total_score": "評分",
+            "current_price": "推薦價", "price_60d": "60日後價",
+            "return_60d_pct": "60日報酬%", "win": "正確",
+            "hot_tags": "熱門標記",
+        }), use_container_width=True, hide_index=True)
+        _acc_csv = _acc_df.to_csv(index=False, encoding="utf-8-sig")
+        st.download_button("📥 下載正確率報告 CSV", data=_acc_csv,
+                           file_name=f"accuracy_60d_{_date.today()}.csv", mime="text/csv")
+    else:
+        st.info("尚無 60 日績效樣本。可先執行下方「歷史回溯評估」補足歷史樣本，"
+                "或等每日掃描累積 60 天後自動回填。")
+
+    # ── 歷史回溯評估（90 天前 Top 3）─────────────────────────────────────────
+    with st.expander("⏪ 歷史回溯評估（用真實歷史資料重建過去的推薦）", expanded=not _acc["overall"]):
+        st.markdown(
+            "以指定日期為資料截止點（不引入未來資料），用同一套多因子評分"
+            "選出當時的前 3 名，再對照 60 天後的實際股價評估正確率。"
+            "結果會寫入推薦紀錄，累積到上方報告中。\n\n"
+            "*註：候選池以目前成交值前 50 名為基準（歷史成交值排行需付費資料），"
+            "存在輕微存活者偏差。*"
+        )
+        _eval_c1, _eval_c2 = st.columns(2)
+        _days_ago = _eval_c1.number_input("幾天前的推薦", min_value=61, max_value=365, value=90, step=1)
+        _horizon = _eval_c2.number_input("評估持有天數", min_value=5, max_value=120, value=60, step=5)
+
+        if st.button("▶️ 執行歷史評估（約需 3-5 分鐘）", key="hist_eval_btn"):
+            _progress = st.empty()
+            try:
+                from screener.historical_eval import HistoricalEvaluator
+                _evaluator = HistoricalEvaluator(universe_size=50)
+                with st.spinner("歷史評估執行中..."):
+                    _hist = _evaluator.evaluate(
+                        days_ago=int(_days_ago),
+                        horizon_days=int(_horizon),
+                        top_k=3,
+                        save_to_db=True,
+                        progress_callback=lambda m: _progress.caption(m),
+                    )
+                if _hist.get("error"):
+                    st.error(f"評估失敗：{_hist['error']}")
+                else:
+                    st.success(f"評估完成（{_hist['as_of']} 時間點，評分 {_hist['scored_count']} 支）")
+                    h1, h2, h3 = st.columns(3)
+                    h1.metric(f"{_horizon} 日平均報酬",
+                              f"{_hist['avg_return_pct']:+.1f}%" if _hist["avg_return_pct"] is not None else "—")
+                    h2.metric("正確率",
+                              f"{_hist['win_rate']*100:.0f}%" if _hist["win_rate"] is not None else "—")
+                    _bench = _hist.get("benchmark_return_pct")
+                    _alpha = _hist.get("alpha_pct")
+                    h3.metric("vs 大盤（超額報酬）",
+                              f"{_alpha:+.1f}%" if _alpha is not None else "—",
+                              help=f"同期加權指數報酬：{_bench:+.1f}%" if _bench is not None else None)
+                    if _hist["picks"]:
+                        st.dataframe(pd.DataFrame(_hist["picks"]).rename(columns={
+                            "stock_id": "代號", "stock_name": "名稱", "total_score": "當時評分",
+                            "entry_price": "進場價", "exit_price": "出場價",
+                            "return_pct": "報酬%", "win": "正確",
+                        }), use_container_width=True, hide_index=True)
+                    st.caption("結果已寫入推薦紀錄 — 重新整理頁面即可在上方正確率報告中看到。")
+            except Exception as _e:
+                st.error(f"歷史評估異常：{_e}")
 
     st.markdown("---")
     st.caption("⚠️ 本推薦由量化模型自動生成，僅供學習與研究參考，不構成任何投資建議。投資涉及風險，請自行評估。")

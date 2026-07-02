@@ -45,9 +45,19 @@ CREATE TABLE IF NOT EXISTS daily_recommendations (
     price_20d         REAL,
     return_5d_pct     REAL,
     return_20d_pct    REAL,
+    price_60d         REAL,
+    return_60d_pct    REAL,
+    hot_tags          TEXT,
     UNIQUE(recommend_date, stock_id)
 );
 """
+
+# 既有資料庫的欄位補齊（ALTER TABLE 不支援 IF NOT EXISTS，逐一檢查）
+_MIGRATION_COLUMNS = {
+    "price_60d": "REAL",
+    "return_60d_pct": "REAL",
+    "hot_tags": "TEXT",
+}
 
 _CREATE_SCAN_LOGS = """
 CREATE TABLE IF NOT EXISTS scan_logs (
@@ -91,6 +101,14 @@ class RecommendationDB:
         with self._conn() as conn:
             conn.execute(_CREATE_RECOMMENDATIONS)
             conn.execute(_CREATE_SCAN_LOGS)
+            # migration：舊版資料庫補上新欄位
+            existing_cols = {
+                row[1] for row in conn.execute("PRAGMA table_info(daily_recommendations)")
+            }
+            for col, col_type in _MIGRATION_COLUMNS.items():
+                if col not in existing_cols:
+                    conn.execute(f"ALTER TABLE daily_recommendations ADD COLUMN {col} {col_type}")
+                    logger.info("DB migration：新增欄位 %s", col)
         logger.debug("DB 初始化完成：%s", self.db_path)
 
     # ── 寫入 ───────────────────────────────────────────────────────────────────
@@ -108,12 +126,12 @@ class RecommendationDB:
             (recommend_date, rank, stock_id, stock_name, total_score, recommendation,
              current_price, reason_1, reason_2, reason_3, risk_warning,
              target_price, upside_pct, industry,
-             chips_score, fundamental_score, technical_score, momentum_score)
+             chips_score, fundamental_score, technical_score, momentum_score, hot_tags)
         VALUES
             (:recommend_date, :rank, :stock_id, :stock_name, :total_score, :recommendation,
              :current_price, :reason_1, :reason_2, :reason_3, :risk_warning,
              :target_price, :upside_pct, :industry,
-             :chips_score, :fundamental_score, :technical_score, :momentum_score)
+             :chips_score, :fundamental_score, :technical_score, :momentum_score, :hot_tags)
         """
         rows = []
         for rec in recommendations:
@@ -138,6 +156,7 @@ class RecommendationDB:
                 "fundamental_score": score_bd.get("fundamental_score"),
                 "technical_score": score_bd.get("technical_score"),
                 "momentum_score": score_bd.get("momentum_score"),
+                "hot_tags": ", ".join(rec.get("hot_tags", [])) or None,
             })
         with self._conn() as conn:
             conn.executemany(sql, rows)
@@ -196,8 +215,9 @@ class RecommendationDB:
         recommend_date: date,
         price_5d: Optional[float] = None,
         price_20d: Optional[float] = None,
+        price_60d: Optional[float] = None,
     ) -> None:
-        """回填 5 日和 20 日後的實際股價，並計算報酬率。"""
+        """回填 5 / 20 / 60 日後的實際股價，並計算報酬率。只更新有提供的欄位。"""
         date_str = recommend_date.isoformat() if isinstance(recommend_date, date) else str(recommend_date)
         with self._conn() as conn:
             row = conn.execute(
@@ -208,14 +228,25 @@ class RecommendationDB:
                 return
 
             entry_price = row["current_price"] or 0
-            ret_5d = ((price_5d / entry_price - 1) * 100) if (price_5d and entry_price) else None
-            ret_20d = ((price_20d / entry_price - 1) * 100) if (price_20d and entry_price) else None
 
+            updates, params = [], []
+            for price, price_col, ret_col in (
+                (price_5d, "price_5d", "return_5d_pct"),
+                (price_20d, "price_20d", "return_20d_pct"),
+                (price_60d, "price_60d", "return_60d_pct"),
+            ):
+                if price is not None:
+                    ret = ((price / entry_price - 1) * 100) if entry_price else None
+                    updates += [f"{price_col}=?", f"{ret_col}=?"]
+                    params += [price, ret]
+
+            if not updates:
+                return
+            params += [date_str, stock_id]
             conn.execute(
-                """UPDATE daily_recommendations
-                   SET price_5d=?, price_20d=?, return_5d_pct=?, return_20d_pct=?
-                   WHERE recommend_date=? AND stock_id=?""",
-                (price_5d, price_20d, ret_5d, ret_20d, date_str, stock_id),
+                f"UPDATE daily_recommendations SET {', '.join(updates)} "
+                "WHERE recommend_date=? AND stock_id=?",
+                params,
             )
 
     def get_performance_summary(self, n_days: int = 90) -> dict:
@@ -233,10 +264,10 @@ class RecommendationDB:
             }
         """
         sql = """
-        SELECT return_5d_pct, return_20d_pct
+        SELECT return_5d_pct, return_20d_pct, return_60d_pct
         FROM daily_recommendations
         WHERE recommend_date >= date('now', :offset)
-          AND return_5d_pct IS NOT NULL
+          AND (return_5d_pct IS NOT NULL OR return_60d_pct IS NOT NULL)
         """
         with self._conn() as conn:
             rows = conn.execute(sql, {"offset": f"-{n_days} days"}).fetchall()
@@ -247,19 +278,22 @@ class RecommendationDB:
 
         if not rows:
             return {
-                "avg_return_5d": None, "avg_return_20d": None,
-                "win_rate_5d": None, "win_rate_20d": None,
+                "avg_return_5d": None, "avg_return_20d": None, "avg_return_60d": None,
+                "win_rate_5d": None, "win_rate_20d": None, "win_rate_60d": None,
                 "total_recommendations": total, "evaluated_count": 0,
             }
 
         ret5 = [r["return_5d_pct"] for r in rows if r["return_5d_pct"] is not None]
         ret20 = [r["return_20d_pct"] for r in rows if r["return_20d_pct"] is not None]
+        ret60 = [r["return_60d_pct"] for r in rows if r["return_60d_pct"] is not None]
 
         return {
             "avg_return_5d": round(sum(ret5) / len(ret5), 2) if ret5 else None,
             "avg_return_20d": round(sum(ret20) / len(ret20), 2) if ret20 else None,
+            "avg_return_60d": round(sum(ret60) / len(ret60), 2) if ret60 else None,
             "win_rate_5d": round(sum(1 for r in ret5 if r > 0) / len(ret5), 3) if ret5 else None,
             "win_rate_20d": round(sum(1 for r in ret20 if r > 0) / len(ret20), 3) if ret20 else None,
+            "win_rate_60d": round(sum(1 for r in ret60 if r > 0) / len(ret60), 3) if ret60 else None,
             "total_recommendations": total,
-            "evaluated_count": len(ret5),
+            "evaluated_count": max(len(ret5), len(ret60)),
         }

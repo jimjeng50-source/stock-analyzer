@@ -97,7 +97,7 @@ class TestBatchScorer:
 
     def test_failed_stock_excluded_from_result(self):
         """評分失敗的個股應放入 failed_df，不出現在主結果中。"""
-        def fetcher_side_effect(stock_id):
+        def fetcher_side_effect(stock_id, as_of=None):
             mock = MagicMock()
             if stock_id == "FAIL":
                 mock.get_price.side_effect = RuntimeError("模擬失敗")

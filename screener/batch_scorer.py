@@ -37,8 +37,14 @@ class BatchScorer:
     - FinMind 回傳 429 時自動等待 60 秒後重試（最多 3 次）
     """
 
-    def __init__(self, max_workers: int = BATCH_MAX_WORKERS):
+    def __init__(self, max_workers: int = BATCH_MAX_WORKERS, as_of: str = None):
+        """
+        Args:
+            as_of: "YYYY-MM-DD"。指定時以該日為資料截止點評分
+                   （歷史回溯評估用）。
+        """
         self.max_workers = max_workers
+        self.as_of = as_of
         self.scorer = Scorer(FACTOR_WEIGHTS)
         self.failed_df: pd.DataFrame = pd.DataFrame()
 
@@ -111,7 +117,7 @@ class BatchScorer:
         """
         for attempt in range(3):
             try:
-                fetcher = FinMindFetcher(stock_id)
+                fetcher = FinMindFetcher(stock_id, as_of=self.as_of)
                 price_df = fetcher.get_price()
                 if price_df is None or price_df.empty:
                     return {"stock_id": stock_id, "error": "無股價資料", "total_score": None}
