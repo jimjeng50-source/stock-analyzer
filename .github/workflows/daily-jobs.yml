@@ -1,0 +1,77 @@
+# 每日排程任務：盤後掃描推薦 + 風險警訊 + 週一績效回填
+#
+# 注意：
+# - GitHub Actions cron 用 UTC 時間（台灣 = UTC+8）
+# - cron 觸發可能延遲 5-30 分鐘（GitHub 尖峰時段），時間僅供參考
+# - 需在 repo Settings → Secrets and variables → Actions 設定：
+#   FINMIND_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+#   ANTHROPIC_API_KEY（選填，推薦理由用）
+
+name: Daily Jobs
+
+on:
+  schedule:
+    - cron: "0 9 * * 1-5"    # 平日 17:00 台灣時間 → 盤後掃描 + 風險警訊
+    - cron: "0 1 * * 1"      # 週一 09:00 台灣時間 → 績效回填
+  workflow_dispatch:          # 手動觸發（Actions 頁面按 Run workflow）
+    inputs:
+      job:
+        description: "要執行的任務"
+        type: choice
+        options: [scan, risk, backfill, all]
+        default: all
+
+concurrency:
+  group: daily-jobs
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # 允許把更新後的資料庫 commit 回 repo
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── 平日 17:00：掃描 + 風險警訊 ──────────────────────────────
+      - name: Daily scan
+        if: github.event.schedule == '0 9 * * 1-5' || inputs.job == 'scan' || inputs.job == 'all'
+        run: python jobs.py scan
+
+      - name: Risk alert
+        if: github.event.schedule == '0 9 * * 1-5' || inputs.job == 'risk' || inputs.job == 'all'
+        run: python jobs.py risk
+
+      # ── 週一 09:00：績效回填 ─────────────────────────────────────
+      - name: Performance backfill
+        if: github.event.schedule == '0 1 * * 1' || inputs.job == 'backfill' || inputs.job == 'all'
+        run: python jobs.py backfill
+
+      # ── 把更新後的資料庫 commit 回 repo（推薦歷史持久化）─────────
+      - name: Commit updated databases
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/*.db 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update recommendation data [skip ci]"
+            git pull --rebase origin main
+            git push origin main
+          else
+            echo "資料庫無變更，跳過 commit"
+          fi
