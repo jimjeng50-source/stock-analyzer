@@ -175,6 +175,25 @@ def run_scheduler():
         except Exception as e:
             logger.error("績效回填任務失敗：%s", e)
 
+    # ── 任務 7：每日風險警訊（週一至五 18:30，盤後掃描完成後）─────────────
+    @scheduler.scheduled_job("cron", day_of_week="mon-fri", hour="18", minute="30", id="daily_risk_alert")
+    def daily_risk_alert():
+        """每日檢查大盤/持股/營收/EPS 風險，有警訊才推播。"""
+        try:
+            from alerts.risk_monitor import RiskMonitor
+            from alerts.notifier import Notifier
+
+            monitor = RiskMonitor()
+            report = monitor.run_daily()
+            if report["has_alerts"]:
+                Notifier().send_telegram(monitor.format_message(report))
+                n = sum(len(report[k]) for k in ("market", "positions", "revenue", "eps"))
+                logger.info("風險警訊已推播（%d 則）", n)
+            else:
+                logger.info("今日無風險警訊")
+        except Exception as e:
+            logger.error("每日風險警訊任務失敗：%s", e, exc_info=True)
+
     logger.info("排程器啟動（Asia/Taipei），按 Ctrl+C 停止")
     try:
         scheduler.start()

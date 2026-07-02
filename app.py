@@ -1110,6 +1110,43 @@ with tab5:
     st.subheader("🛡️ 市場風險監控儀表板")
     st.caption(f"更新時間：{_now_tw().strftime('%Y-%m-%d %H:%M')} (台灣時間)")
 
+    # ── 每日風險警訊 ──────────────────────────────────────────────
+    st.markdown("### 🚨 每日風險警訊")
+    st.caption(
+        "每個交易日 18:30 自動檢查並推播（有警訊才通知）："
+        "大盤重挫/跌破季線、推薦股停損（-8%）/停利（+15%）/達標、"
+        "追蹤清單營收公布預告與惡化、Forward EPS 下修。"
+    )
+    if st.button("🔍 立即檢查風險警訊", key="risk_check_btn"):
+        with st.spinner("檢查中（大盤、持股、營收、EPS）..."):
+            try:
+                from alerts.risk_monitor import RiskMonitor
+                _rm = RiskMonitor()
+                _risk_report = _rm.run_daily()
+                if _risk_report["has_alerts"]:
+                    if _risk_report["market"]:
+                        st.markdown("**大盤風險**")
+                        for _w in _risk_report["market"]:
+                            st.error(_w)
+                    if _risk_report["positions"]:
+                        st.markdown("**持股警訊（近 60 天推薦股）**")
+                        for _a in _risk_report["positions"]:
+                            (st.error if _a["action"] == "stop_loss" else st.success)(_a["msg"])
+                    if _risk_report["revenue"]:
+                        st.markdown("**營收動態（追蹤清單）**")
+                        for _a in _risk_report["revenue"]:
+                            (st.error if _a.get("type") == "deterioration" else st.info)(_a["msg"])
+                    if _risk_report["eps"]:
+                        st.markdown("**Forward EPS 下修**")
+                        for _a in _risk_report["eps"]:
+                            st.error(_a["msg"])
+                else:
+                    st.success("✅ 今日無風險警訊（大盤、持股、營收、EPS 均正常）")
+            except Exception as _e:
+                st.error(f"風險檢查異常：{_e}")
+
+    st.markdown("---")
+
     # ── 巴菲特指標 ────────────────────────────────────────────────
     st.markdown("### 📐 台灣巴菲特指標（大盤估值）")
     with st.spinner("載入巴菲特指標..."):
@@ -1754,6 +1791,11 @@ with tab9:
                 feps_str = f"{_feps:.2f} 元{_g_str}"
             else:
                 feps_str = "—"
+            if price:
+                _tp_ref = tp if tp else price * 1.15
+                sl_tp_str = f"🛡️ 停損參考 NT${price*0.92:,.0f}（-8%）　|　停利參考 NT${_tp_ref:,.0f}"
+            else:
+                sl_tp_str = ""
 
             st.markdown(
                 f"""
@@ -1765,6 +1807,7 @@ with tab9:
   <div style="color:#8b949e;margin-bottom:8px">
     現價 NT${price:,.0f}　|　目標價 {tp_str}　|　Forward EPS {feps_str}
   </div>
+  {"<div style='color:#8b949e;margin:4px 0;font-size:0.9em'>" + sl_tp_str + "</div>" if sl_tp_str else ""}
   {hot_html}
   <div style="margin:6px 0">✅ {r1 or "—"}</div>
   <div style="margin:6px 0">✅ {r2 or "—"}</div>
