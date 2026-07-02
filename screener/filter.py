@@ -118,11 +118,17 @@ class QuickFilter:
     # ── 各步過濾 ───────────────────────────────────────────────────────────────
 
     def _filter_price(self, df: pd.DataFrame) -> pd.DataFrame:
-        if "last_price" not in df.columns:
+        if "last_price" not in df.columns or df.empty:
+            return df
+        prices = pd.to_numeric(df["last_price"], errors="coerce").fillna(0)
+        # 防呆（v4.1）：若整欄股價都是 0，代表上游資料抓取失敗，
+        # 跳過價格過濾並警告，而不是把 100% 股票過濾掉
+        if (prices <= 0).all():
+            logger.warning("價格資料全部缺失，跳過價格過濾（請檢查資料來源）")
             return df
         mask = (
-            (df["last_price"] >= self.config.min_price) &
-            (df["last_price"] <= self.config.max_price)
+            (prices >= self.config.min_price) &
+            (prices <= self.config.max_price)
         )
         return df[mask]
 
