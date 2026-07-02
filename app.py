@@ -23,6 +23,10 @@ from factors import compute_chips, compute_technical, compute_fundamental, compu
 from models.scorer import Scorer
 from config import get_runtime_config, save_local_config
 
+# 每次 rerun 重新讀取（設定分頁儲存後立即生效）
+FINMIND_TOKEN = get_runtime_config("FINMIND_TOKEN")
+ANTHROPIC_API_KEY = get_runtime_config("ANTHROPIC_API_KEY")
+
 st.set_page_config(page_title="台股多因子評分系統", page_icon="📊",
                    layout="wide", initial_sidebar_state="expanded")
 
