@@ -32,6 +32,8 @@ from config import (
 logger = logging.getLogger(__name__)
 
 _FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
+_TWSE_SNAPSHOT_API = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+_TPEX_SNAPSHOT_API = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
 
 
 class UniverseManager:
@@ -260,16 +262,24 @@ class UniverseManager:
 
     def _fetch_market_snapshot(self, max_lookback_days: int = 10) -> Optional[pd.DataFrame]:
         """
-        取得最近一個交易日的全市場股價快照（單日、不帶 data_id）。
+        取得最近一個交易日的全市場股價快照。
 
-        FinMind 的 TaiwanStockPrice 支援「單一日期、全市場」查詢，
-        這是免費方案可用的批次方式（範圍查詢則不支援）。
-        從今天往回走，最多嘗試 max_lookback_days 天（跳過假日）。
+        來源優先序：
+        1. FinMind TaiwanStockPrice 單日查詢（需 Sponsor 等級）
+        2. TWSE + TPEX 官方 OpenAPI（免費、無需 token）
 
         Returns:
             DataFrame（欄位含 stock_id, close, Trading_Volume, Trading_money）
             或 None（全部失敗時）
         """
+        snap = self._fetch_finmind_snapshot(max_lookback_days)
+        if snap is not None:
+            return snap
+        logger.info("FinMind 快照不可用，改用 TWSE/TPEX 官方 OpenAPI...")
+        return self._fetch_twse_tpex_snapshot()
+
+    def _fetch_finmind_snapshot(self, max_lookback_days: int = 10) -> Optional[pd.DataFrame]:
+        """FinMind 單日全市場查詢（免費 register 等級不支援，Sponsor 等級可用）。"""
         from datetime import date as _date
 
         for offset in range(max_lookback_days):
@@ -291,19 +301,88 @@ class UniverseManager:
                     snap = pd.DataFrame(data["data"])
                     # 假日/尚未收盤時 data 可能為空 list → 繼續往前找
                     if not snap.empty and "close" in snap.columns:
-                        logger.info("全市場快照日期：%s（%d 筆）", day, len(snap))
+                        logger.info("FinMind 快照日期：%s（%d 筆）", day, len(snap))
                         return snap
                 else:
                     msg = str(data.get("msg", ""))
-                    # 配額不足或權限問題直接中止，不需要再試更早的日期
-                    if "quota" in msg.lower() or "permission" in msg.lower() or "402" in msg:
-                        logger.error("FinMind 回應：%s（配額/權限問題）", msg)
+                    # 等級不足/配額/權限問題直接中止，不需要再試更早的日期
+                    lowered = msg.lower()
+                    if any(k in lowered for k in ("quota", "permission", "level", "402")):
+                        logger.warning("FinMind 快照被拒：%s", msg)
                         return None
             except Exception as e:
-                logger.warning("快照 %s 抓取失敗：%s", day, e)
+                logger.warning("FinMind 快照 %s 抓取失敗：%s", day, e)
             time.sleep(0.5)
 
         return None
+
+    def _fetch_twse_tpex_snapshot(self) -> Optional[pd.DataFrame]:
+        """
+        從 TWSE / TPEX 官方 OpenAPI 取得最近交易日全市場收盤快照。
+        免費、無需註冊，回傳最近一個交易日的資料。
+        """
+        frames = []
+
+        # 上市（TWSE）
+        try:
+            resp = requests.get(
+                _TWSE_SNAPSHOT_API, timeout=60,
+                headers={"accept": "application/json", "User-Agent": "Mozilla/5.0"},
+            )
+            resp.raise_for_status()
+            df = pd.DataFrame(resp.json())
+            if not df.empty and "Code" in df.columns:
+                frames.append(pd.DataFrame({
+                    "stock_id": df["Code"],
+                    "close": df.get("ClosingPrice"),
+                    "Trading_Volume": df.get("TradeVolume"),
+                    "Trading_money": df.get("TradeValue"),
+                }))
+                logger.info("TWSE 快照：%d 筆", len(df))
+        except Exception as e:
+            logger.warning("TWSE 快照抓取失敗：%s", e)
+
+        # 上櫃（TPEX）— 欄位名稱防禦性對應
+        try:
+            resp = requests.get(
+                _TPEX_SNAPSHOT_API, timeout=60,
+                headers={"accept": "application/json", "User-Agent": "Mozilla/5.0"},
+            )
+            resp.raise_for_status()
+            df = pd.DataFrame(resp.json())
+            code_col = next((c for c in ("SecuritiesCompanyCode", "Code", "stock_id") if c in df.columns), None)
+            close_col = next((c for c in ("Close", "ClosingPrice", "close") if c in df.columns), None)
+            vol_col = next((c for c in ("TradingShares", "TradeVolume", "Trading_Volume") if c in df.columns), None)
+            amt_col = next((c for c in ("TransactionAmount", "TradeValue", "Trading_money") if c in df.columns), None)
+            if not df.empty and code_col and close_col:
+                frames.append(pd.DataFrame({
+                    "stock_id": df[code_col],
+                    "close": df[close_col],
+                    "Trading_Volume": df[vol_col] if vol_col else 0,
+                    "Trading_money": df[amt_col] if amt_col else 0,
+                }))
+                logger.info("TPEX 快照：%d 筆", len(df))
+        except Exception as e:
+            logger.warning("TPEX 快照抓取失敗：%s", e)
+
+        if not frames:
+            return None
+
+        snap = pd.concat(frames, ignore_index=True)
+        # 官方 API 數值帶千分位逗號、無成交時為 "-" → 清理
+        for col in ("close", "Trading_Volume", "Trading_money"):
+            snap[col] = pd.to_numeric(
+                snap[col].astype(str).str.replace(",", "", regex=False),
+                errors="coerce",
+            )
+        snap["stock_id"] = snap["stock_id"].astype(str).str.strip()
+        snap = snap.dropna(subset=["close"])
+        snap = snap[snap["close"] > 0]
+
+        if snap.empty:
+            return None
+        logger.info("TWSE/TPEX 合併快照：%d 筆", len(snap))
+        return snap
 
     def _fetch_latest_price(self, stock_id: str) -> float:
         """取得單支股票最新收盤價（自訂名單補充用）。"""
