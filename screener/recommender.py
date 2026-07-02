@@ -438,6 +438,10 @@ class DailyRecommender:
             if feps is not None:
                 growth_str = f"（成長 {eps_growth:+.0f}%）" if eps_growth is not None else ""
                 lines.append(f"📈 Forward EPS：{feps:.2f} 元{growth_str}")
+            if price:
+                stop_loss = price * 0.92
+                take_profit = tp if tp else price * 1.15
+                lines.append(f"🛡️ 停損參考：{stop_loss:.0f} 元（-8%）｜停利參考：{take_profit:.0f} 元")
             for r in reasons:
                 lines.append(f"✅ {r}")
             if risk:
