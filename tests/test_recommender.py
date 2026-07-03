@@ -107,3 +107,28 @@ class TestDailyRecommender:
         """候選股票池為空時，result['error'] 不應為 None。"""
         result, _ = _run_with_mocks(mock_universe_df, mock_scored_df, universe_empty=True)
         assert result["error"] is not None
+
+    # ── 無達標推薦時的觀察名單 fallback ────────────────────────────────────────
+
+    def test_watch_list_when_no_stock_reaches_threshold(self, mock_universe_df):
+        """全部低於推薦門檻（70）但高於快篩門檻（60）→ 0 推薦 + 觀察名單。"""
+        low_scored = pd.DataFrame([
+            {"stock_id": "2330", "stock_name": "台積電", "industry": "半導體",
+             "total_score": 66.0, "recommendation": "持有",
+             "chips_score": 60, "fundamental_score": 65, "technical_score": 70,
+             "momentum_score": 68, "risk_score": 60, "current_price": 850.0, "error": ""},
+            {"stock_id": "2317", "stock_name": "鴻海", "industry": "電子",
+             "total_score": 62.0, "recommendation": "持有",
+             "chips_score": 58, "fundamental_score": 60, "technical_score": 66,
+             "momentum_score": 64, "risk_score": 58, "current_price": 180.0, "error": ""},
+        ])
+        result, save_called = _run_with_mocks(mock_universe_df, low_scored, dry_run=False)
+
+        assert result["error"] is None
+        assert result["recommendations"] == []
+        assert len(result["watch_list"]) == 2
+        assert result["watch_list"][0]["stock_id"] == "2330"   # 最高分在前
+        assert save_called is False                             # 觀察名單不寫入 DB
+        assert "無個股達推薦門檻" in result["message"]
+        assert "觀察名單" in result["message"]
+        assert "66" in result["message"]                        # 顯示最高分
