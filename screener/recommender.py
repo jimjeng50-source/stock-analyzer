@@ -74,6 +74,7 @@ class DailyRecommender:
         result = {
             "date": today.isoformat(),
             "recommendations": [],
+            "watch_list": [],
             "scan_summary": {},
             "market_context": "",
             "message": "",
@@ -177,6 +178,25 @@ class DailyRecommender:
                 recommendations.append(rec)
 
             result["recommendations"] = recommendations
+
+            # 無個股達推薦門檻 → 附觀察名單（明示未達標，不算正式推薦）
+            if not recommendations and not top20_df.empty:
+                result["watch_list"] = [
+                    {
+                        "stock_id": str(row["stock_id"]),
+                        "stock_name": row.get("stock_name", row["stock_id"]),
+                        "total_score": round(float(row["total_score"]), 1),
+                        "current_price": row.get("current_price"),
+                        "hot_tags": hot_tags_map.get(str(row["stock_id"]), []),
+                    }
+                    for _, row in top20_df.head(3).iterrows()
+                ]
+                logger.info(
+                    "無個股達推薦門檻（%d 分），最高分 %.1f，回傳觀察名單 %d 支",
+                    SCREENER_MIN_RECOMMEND_SCORE,
+                    float(top20_df["total_score"].max()),
+                    len(result["watch_list"]),
+                )
 
             # Phase 6 — 大盤背景
             result["market_context"] = self._generate_market_context(scored_df)
@@ -410,6 +430,39 @@ class DailyRecommender:
             "╚══════════════════════╝",
             "",
             f"🌐 大盤背景：{context}",
+        ]
+
+        # 無達標推薦 → 說明原因 + 觀察名單
+        if n == 0:
+            top_score = summary.get("top_score", 0)
+            failed = summary.get("failed_count", 0)
+            scored = summary.get("scored_count", 0)
+            lines += [
+                "",
+                f"📭 今日無個股達推薦門檻（{SCREENER_MIN_RECOMMEND_SCORE} 分）",
+                f"最高分：{top_score:.0f} 分",
+            ]
+            if scored and failed and failed >= scored * 0.3:
+                lines.append(
+                    f"⚠️ 注意：{failed}/{scored + failed} 支評分失敗（資料取得問題），"
+                    "分數可能被低估，建議稍後重新掃描"
+                )
+            watch = result.get("watch_list", [])
+            if watch:
+                lines += ["", "━━ 觀察名單（未達標，僅供參考）━━"]
+                for w in watch:
+                    price = w.get("current_price") or 0
+                    lines.append(
+                        f"👀 {w['stock_id']} {w.get('stock_name', '')}"
+                        f"　{w['total_score']:.0f} 分｜{price:.0f} 元"
+                    )
+            lines += [
+                "",
+                "⚠️ 本報告由量化模型自動生成，僅供學習與研究參考，不構成任何投資建議。",
+            ]
+            return "\n".join(lines)
+
+        lines += [
             "",
             f"━━━ Top {n} 推薦 ━━━",
         ]

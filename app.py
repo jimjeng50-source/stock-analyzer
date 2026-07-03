@@ -1745,10 +1745,32 @@ with tab9:
             with st.spinner("掃描中，請稍候（依候選池大小約需 3-10 分鐘）..."):
                 try:
                     from screener.recommender import DailyRecommender
+                    from config import SCREENER_MIN_RECOMMEND_SCORE as _MIN_SCORE
                     recommender = DailyRecommender()
                     scan_result = recommender.run(dry_run=False)
                     if scan_result.get("error"):
                         st.error(f"掃描失敗：{scan_result['error']}")
+                    elif not scan_result["recommendations"]:
+                        _sum = scan_result.get("scan_summary", {})
+                        _top = _sum.get("top_score", 0)
+                        _failed = _sum.get("failed_count", 0)
+                        _scored = _sum.get("scored_count", 0)
+                        st.warning(
+                            f"今日無個股達推薦門檻（{_MIN_SCORE} 分）— 最高分 {_top:.0f} 分。"
+                        )
+                        if _scored and _failed and _failed >= _scored * 0.3:
+                            st.error(
+                                f"⚠️ {_failed}/{_scored + _failed} 支評分失敗（可能是 API 配額問題），"
+                                "分數可能被低估 — 建議 1 小時後重新掃描"
+                            )
+                        _watch = scan_result.get("watch_list", [])
+                        if _watch:
+                            st.markdown("**👀 觀察名單（評分最高但未達標）**")
+                            st.dataframe(pd.DataFrame(_watch).rename(columns={
+                                "stock_id": "代號", "stock_name": "名稱",
+                                "total_score": "評分", "current_price": "現價",
+                                "hot_tags": "熱門標記",
+                            }), use_container_width=True, hide_index=True)
                     else:
                         st.success(f"掃描完成！推薦 {len(scan_result['recommendations'])} 支")
                         today_recs = scan_result["recommendations"]
