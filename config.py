@@ -72,12 +72,13 @@ DEFAULT_DAYS = 90
 FUNDAMENTAL_DAYS = 450
 
 # 因子權重（總和 = 1.0）
+# v5 穩健配置：基本面優先（長線投資導向），籌碼保留領先性、技術/動能降為輔助
 FACTOR_WEIGHTS = {
-    "chips":       0.30,
-    "fundamental": 0.25,
-    "technical":   0.20,
-    "momentum":    0.15,
-    "risk":        0.10,
+    "chips":       0.20,
+    "fundamental": 0.45,
+    "technical":   0.10,
+    "momentum":    0.10,
+    "risk":        0.15,
 }
 
 # 評分門檻（對應投資建議標誌）
@@ -102,6 +103,12 @@ FILTER_MIN_REVENUE_YOY = -30.0
 
 SCREENER_QUICK_SCORE_THRESHOLD = int(_get_secret("SCREENER_QUICK_SCORE_THRESHOLD", "60"))
 SCREENER_MIN_RECOMMEND_SCORE = int(_get_secret("SCREENER_MIN_RECOMMEND_SCORE", "70"))
+
+# 大盤狀態閘門：大盤有系統性風險警訊時，當日推薦降級為觀察名單（設 "0" 停用）
+SCREENER_REGIME_FILTER = _get_secret("SCREENER_REGIME_FILTER", "1") == "1"
+
+# Forward EPS 在最終排名的權重（0~1）：final = (1-w)*基礎分 + w*前瞻分
+FORWARD_EPS_RERANK_WEIGHT = float(_get_secret("FORWARD_EPS_RERANK_WEIGHT", "0.25"))
 
 BATCH_FETCH_DELAY_SEC = 0.8
 BATCH_MAX_WORKERS = 3

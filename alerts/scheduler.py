@@ -187,7 +187,7 @@ def run_scheduler():
             report = monitor.run_daily()
             if report["has_alerts"]:
                 Notifier().send_telegram(monitor.format_message(report))
-                n = sum(len(report[k]) for k in ("market", "positions", "revenue", "eps"))
+                n = sum(len(report[k]) for k in ("market", "positions", "revenue", "eps", "fundamental"))
                 logger.info("風險警訊已推播（%d 則）", n)
             else:
                 logger.info("今日無風險警訊")

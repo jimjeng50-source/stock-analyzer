@@ -18,7 +18,7 @@ on:
       job:
         description: "要執行的任務"
         type: choice
-        options: [scan, risk, backfill, backfill-history, all]
+        options: [scan, risk, backfill, backfill-history, report-export, all]
         default: all
       start_date:
         description: "backfill-history 起始日（YYYY-MM-DD）"
@@ -41,6 +41,8 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+      GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -71,12 +73,17 @@ jobs:
         if: inputs.job == 'backfill-history'
         run: python jobs.py backfill-history --start "${{ inputs.start_date }}"
 
+      # ── 週一（回填後）＋手動：正確率報告輸出（repo + Google Drive）──
+      - name: Accuracy report export
+        if: github.event.schedule == '0 1 * * 1' || inputs.job == 'report-export' || inputs.job == 'backfill-history' || inputs.job == 'all'
+        run: python jobs.py report-export
+
       # ── 把更新後的資料庫 commit 回 repo（推薦歷史持久化）─────────
       - name: Commit updated databases
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/*.db 2>/dev/null || true
+          git add data/*.db reports/ 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "chore: update recommendation data [skip ci]"
             git pull --rebase origin main
