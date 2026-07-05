@@ -1955,6 +1955,35 @@ with tab9:
             except Exception as _e:
                 st.error(f"歷史評估異常：{_e}")
 
+        st.markdown("---")
+        st.markdown("**📥 區間歷史回補**：回補起始日至昨日「每個交易日」的前 3 名推薦與 5/20/60 日績效。")
+        _bf_start = st.date_input("回補起始日", value=pd.Timestamp("2026-06-01").date(),
+                                  key="bf_start_date")
+        if st.button("📥 執行歷史回補（約 5-10 分鐘）", key="hist_backfill_btn"):
+            _bf_progress = st.empty()
+            try:
+                from screener.history_backfill import HistoryBackfiller
+                with st.spinner("歷史回補執行中..."):
+                    _bf = HistoryBackfiller(universe_size=30, top_k=3).run(
+                        start=_bf_start,
+                        progress_callback=lambda m: _bf_progress.caption(m),
+                    )
+                if _bf.get("error"):
+                    st.error(f"回補失敗：{_bf['error']}")
+                else:
+                    st.success(
+                        f"回補完成：{_bf['days_done']} 個交易日"
+                        f"（跳過已有資料 {_bf['days_skipped']} 天）、"
+                        f"儲存 {_bf['recs_saved']} 筆推薦 — 重新整理頁面查看"
+                    )
+                    st.caption(
+                        "⚠️ 注意：在網頁執行的回補資料存在 Streamlit 暫存空間，"
+                        "重新部署會消失。要永久保存請改用 GitHub Actions："
+                        "repo → Actions → Daily Jobs → Run workflow → job 選 backfill-history。"
+                    )
+            except Exception as _e:
+                st.error(f"歷史回補異常：{_e}")
+
     st.markdown("---")
     st.caption("⚠️ 本推薦由量化模型自動生成，僅供學習與研究參考，不構成任何投資建議。投資涉及風險，請自行評估。")
 

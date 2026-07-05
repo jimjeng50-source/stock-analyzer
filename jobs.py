@@ -88,13 +88,37 @@ def job_backfill() -> int:
     return 0
 
 
+def job_backfill_history(start_str: str) -> int:
+    """回補指定日期起的歷史推薦（真實歷史資料，時間點截斷）。"""
+    from datetime import date as _date
+    from screener.history_backfill import HistoryBackfiller
+
+    start = _date.fromisoformat(start_str)
+    backfiller = HistoryBackfiller(universe_size=30, top_k=3)
+    result = backfiller.run(start=start)
+
+    if result.get("error"):
+        logger.error("歷史回補失敗：%s", result["error"])
+        return 1
+    logger.info(
+        "歷史回補完成：%d 個交易日（跳過 %d）、儲存 %d 筆推薦",
+        result["days_done"], result["days_skipped"], result["recs_saved"],
+    )
+    return 0
+
+
 JOBS = {"scan": job_scan, "risk": job_risk, "backfill": job_backfill}
 
 
 def main():
     parser = argparse.ArgumentParser(description="排程任務入口")
-    parser.add_argument("job", choices=sorted(JOBS.keys()), help="要執行的任務")
+    parser.add_argument("job", choices=sorted(JOBS.keys()) + ["backfill-history"],
+                        help="要執行的任務")
+    parser.add_argument("--start", default="2026-06-01",
+                        help="backfill-history 起始日（YYYY-MM-DD）")
     args = parser.parse_args()
+    if args.job == "backfill-history":
+        sys.exit(job_backfill_history(args.start))
     sys.exit(JOBS[args.job]())
 
 

@@ -62,13 +62,13 @@ def calc_macro_score() -> dict:
     from macro.futures import compute_futures
     from macro.fund_flow import compute_fund_flow
     from macro.buffett import compute_buffett
-    from config import FINMIND_TOKEN
+    from config import get_runtime_config
 
     raw_fx = compute_fx()
     raw_vix = compute_vix()
     raw_futures = compute_futures()
     raw_flow = compute_fund_flow()
-    raw_buffett = compute_buffett(FINMIND_TOKEN)
+    raw_buffett = compute_buffett(get_runtime_config("FINMIND_TOKEN"))
 
     components = {
         "fx_score":      _fx_to_score(raw_fx),

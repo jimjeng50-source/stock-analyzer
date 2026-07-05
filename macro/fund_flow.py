@@ -10,7 +10,7 @@ warnings.filterwarnings("ignore")
 
 from utils.tz import now_tw
 
-from config import FINMIND_TOKEN
+from config import get_runtime_config
 
 _FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 
@@ -27,7 +27,7 @@ def _fm_stock(stock_id: str, days: int = 30) -> pd.DataFrame:
             "data_id": stock_id,
             "start_date": start,
             "end_date": end.strftime("%Y-%m-%d"),
-            "token": FINMIND_TOKEN,
+            "token": get_runtime_config("FINMIND_TOKEN"),
         }, timeout=15)
         body = resp.json()
         if body.get("status") == 200 and body.get("data"):
@@ -62,7 +62,7 @@ def compute_fund_flow() -> dict:
         "flow_score": 0.5,
     }
 
-    if not FINMIND_TOKEN:
+    if not get_runtime_config("FINMIND_TOKEN"):
         return result
 
     # 以代理股票加總模擬全市場外資流向
