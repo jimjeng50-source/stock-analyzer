@@ -10,6 +10,7 @@ requests>=2.31.0
 yfinance>=0.2.31
 FinMind>=0.7.0
 scipy>=1.11.0
+cryptography>=41.0.0
 
 apscheduler>=3.10.0
 schedule>=1.2.0

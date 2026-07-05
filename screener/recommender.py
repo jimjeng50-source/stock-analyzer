@@ -21,6 +21,8 @@ from config import (
     SCREENER_TOP_N,
     SCREENER_QUICK_SCORE_THRESHOLD,
     SCREENER_MIN_RECOMMEND_SCORE,
+    SCREENER_REGIME_FILTER,
+    FORWARD_EPS_RERANK_WEIGHT,
     CLAUDE_MODEL,
     get_runtime_config,
 )
@@ -138,6 +140,13 @@ class DailyRecommender:
             logger.info("Phase 4: 深度分析 Top %d...", len(top20_df))
             deep_results = self._run_deep_analysis(top20_df)
 
+            # Phase 4.5 — Forward EPS 前瞻分數參與最終排名（基本面優先）
+            top20_df = self._rerank_with_forward_eps(top20_df, deep_results)
+
+            # Phase 4.6 — 大盤狀態閘門：系統性風險時降級為觀察名單
+            regime_warnings = self._check_market_regime()
+            result["regime_warnings"] = regime_warnings
+
             # Phase 5 — Claude API 推薦理由
             logger.info("Phase 5: 生成推薦理由...")
             recommendations = []
@@ -174,8 +183,25 @@ class DailyRecommender:
                         "momentum_score": row.get("momentum_score"),
                     },
                     "hot_tags": hot_tags_map.get(sid, []),
+                    "base_score": row.get("base_score"),
+                    "forward_score": row.get("forward_score"),
                 }
                 recommendations.append(rec)
+
+            # 大盤閘門啟動 → 推薦降級為觀察名單（不建倉、不寫 DB）
+            if recommendations and regime_warnings:
+                logger.warning("大盤閘門啟動（%d 則警訊），推薦降級為觀察名單", len(regime_warnings))
+                result["watch_list"] = [
+                    {
+                        "stock_id": r["stock_id"],
+                        "stock_name": r["stock_name"],
+                        "total_score": round(float(r["total_score"]), 1),
+                        "current_price": r["current_price"],
+                        "hot_tags": r["hot_tags"],
+                    }
+                    for r in recommendations
+                ]
+                recommendations = []
 
             result["recommendations"] = recommendations
 
@@ -277,6 +303,59 @@ class DailyRecommender:
         logger.info("熱門股追加 %d 支進候選池", len(missing))
         return merged
 
+    # ── Phase 4.5：Forward EPS 前瞻排名 ────────────────────────────────────────
+
+    def _rerank_with_forward_eps(
+        self, top_df: pd.DataFrame, deep_results: dict
+    ) -> pd.DataFrame:
+        """
+        用深度分析算出的 Forward EPS 成長率與上檔空間，
+        計算 0-100 的「前瞻分數」並與基礎分混合重排。
+        缺 Forward EPS 資料的個股取中性 50 分（不懲罰、不加分）。
+        final = (1-w)*基礎分 + w*前瞻分，w = FORWARD_EPS_RERANK_WEIGHT
+        """
+        import math
+
+        def _forward_score(sid: str) -> float:
+            deep = deep_results.get(sid, {})
+            growth = deep.get("eps_growth_rate")
+            upside = deep.get("upside_pct")
+            if growth is None and upside is None:
+                return 50.0
+            parts = []
+            if growth is not None:
+                # 成長率 sigmoid：+10% 成長 → 50 分中心，±15% 靈敏度
+                parts.append(100 / (1 + math.exp(-(growth - 10) / 15)))
+            if upside is not None:
+                # 上檔空間 sigmoid：+5% → 50 分中心
+                parts.append(100 / (1 + math.exp(-(upside - 5) / 15)))
+            return sum(parts) / len(parts)
+
+        df = top_df.copy()
+        df["base_score"] = df["total_score"]
+        df["forward_score"] = df["stock_id"].map(lambda s: round(_forward_score(s), 1))
+        w = FORWARD_EPS_RERANK_WEIGHT
+        df["total_score"] = (1 - w) * df["base_score"] + w * df["forward_score"]
+        df = df.sort_values("total_score", ascending=False).reset_index(drop=True)
+        logger.info(
+            "Forward EPS 重排完成（權重 %.0f%%），新 Top 3：%s",
+            w * 100, ", ".join(df["stock_id"].head(3).astype(str)),
+        )
+        return df
+
+    # ── Phase 4.6：大盤狀態閘門 ────────────────────────────────────────────────
+
+    def _check_market_regime(self) -> list:
+        """大盤系統性風險檢查。停用或檢查失敗時回傳空 list（不擋推薦）。"""
+        if not SCREENER_REGIME_FILTER:
+            return []
+        try:
+            from alerts.risk_monitor import RiskMonitor
+            return RiskMonitor().check_market_risk()
+        except Exception as e:
+            logger.warning("大盤閘門檢查失敗（不擋推薦）：%s", e)
+            return []
+
     # ── Phase 4：深度分析 ──────────────────────────────────────────────────────
 
     def _run_deep_analysis(self, top_df: pd.DataFrame) -> dict:
@@ -321,9 +400,9 @@ class DailyRecommender:
     def _generate_recommendation_reason(
         self, stock_data: dict, score_result: dict
     ) -> list:
-        """呼叫 Claude API 生成 3 條推薦理由。失敗時回傳 fallback。"""
+        """呼叫 Claude API 生成 3 條推薦理由。無 API key 或失敗時用結構化理由。"""
         if not get_runtime_config("ANTHROPIC_API_KEY"):
-            return self._fallback_reasons(score_result)
+            return self._build_structured_reasons(stock_data)
 
         try:
             import anthropic
@@ -369,7 +448,58 @@ class DailyRecommender:
         except Exception as e:
             logger.warning("Claude 推薦理由生成失敗 %s: %s", stock_data.get("stock_id"), e)
 
-        return self._fallback_reasons(score_result)
+        return self._build_structured_reasons(stock_data)
+
+    def _build_structured_reasons(self, d: dict) -> list:
+        """
+        規則式多面向推薦理由：每個面向一句帶實際數據的理由。
+        不依賴 Claude API，依面向強度排序取前 3-4 條。
+        """
+        candidates = []  # (優先分數, 理由文字)
+
+        # 基本面（含 Forward EPS）— 基本面優先，permanently first if data exists
+        f_score = d.get("fundamental_score") or 0
+        feps = d.get("forward_eps")
+        growth = d.get("eps_growth_rate")
+        if feps is not None and growth is not None:
+            candidates.append((
+                f_score + 100,   # 基本面理由永遠優先
+                f"基本面：Forward EPS {feps:.2f} 元、預估年成長 {growth:+.0f}%（基本面分 {f_score:.0f}/100）",
+            ))
+        elif f_score >= 60:
+            candidates.append((f_score + 100, f"基本面：營收與獲利體質穩健（基本面分 {f_score:.0f}/100）"))
+
+        # 目標價空間
+        tp = d.get("target_price_base")
+        upside = d.get("upside_pct")
+        if tp and upside is not None and upside > 0:
+            candidates.append((70 + min(upside, 30), f"估值：Forward EPS 推算目標價 {tp:.0f} 元，上檔空間 {upside:+.0f}%"))
+
+        # 籌碼面
+        c_score = d.get("chips_score") or 0
+        if c_score >= 70:
+            candidates.append((c_score, f"籌碼面：法人資金明顯偏多（籌碼分 {c_score:.0f}/100）"))
+        elif c_score >= 60:
+            candidates.append((c_score, f"籌碼面：法人動向溫和偏多（籌碼分 {c_score:.0f}/100）"))
+
+        # 產業鏈
+        chain = d.get("chain_name")
+        chain_signal = d.get("chain_signal")
+        if chain and chain_signal is not None and chain_signal > 0:
+            candidates.append((65, f"產業面：所屬{chain}產業鏈信號偏多（{chain_signal:+.2f}）"))
+
+        # 技術/動能（輔助）
+        t_score = d.get("technical_score") or 0
+        m_score = d.get("momentum_score") or 0
+        if t_score >= 65 and m_score >= 65:
+            candidates.append((min(t_score, m_score) - 10,
+                               f"技術面：趨勢與動能同步向上（技術 {t_score:.0f}／動能 {m_score:.0f}）"))
+        elif t_score >= 70:
+            candidates.append((t_score - 10, f"技術面：中期趨勢結構偏多（技術分 {t_score:.0f}/100）"))
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        reasons = [text for _, text in candidates[:4]]
+        return reasons if reasons else self._fallback_reasons(d)
 
     def _fallback_reasons(self, score_result: dict) -> list:
         """從評分資料自動組合推薦理由（Claude API 失敗時使用）。"""
@@ -437,11 +567,16 @@ class DailyRecommender:
             top_score = summary.get("top_score", 0)
             failed = summary.get("failed_count", 0)
             scored = summary.get("scored_count", 0)
-            lines += [
-                "",
-                f"📭 今日無個股達推薦門檻（{SCREENER_MIN_RECOMMEND_SCORE} 分）",
-                f"最高分：{top_score:.0f} 分",
-            ]
+            regime = result.get("regime_warnings", [])
+            if regime:
+                lines += ["", "🚦 大盤風險閘門啟動 — 今日推薦降級為觀察名單（不建議建倉）"]
+                lines += regime
+            else:
+                lines += [
+                    "",
+                    f"📭 今日無個股達推薦門檻（{SCREENER_MIN_RECOMMEND_SCORE} 分）",
+                    f"最高分：{top_score:.0f} 分",
+                ]
             if scored and failed and failed >= scored * 0.3:
                 lines.append(
                     f"⚠️ 注意：{failed}/{scored + failed} 支評分失敗（資料取得問題），"
@@ -492,9 +627,9 @@ class DailyRecommender:
                 growth_str = f"（成長 {eps_growth:+.0f}%）" if eps_growth is not None else ""
                 lines.append(f"📈 Forward EPS：{feps:.2f} 元{growth_str}")
             if price:
-                stop_loss = price * 0.92
+                stop_loss = price * 0.88
                 take_profit = tp if tp else price * 1.15
-                lines.append(f"🛡️ 停損參考：{stop_loss:.0f} 元（-8%）｜停利參考：{take_profit:.0f} 元")
+                lines.append(f"🛡️ 停損參考：{stop_loss:.0f} 元（-12% 或跌破60日線）｜停利參考：{take_profit:.0f} 元")
             for r in reasons:
                 lines.append(f"✅ {r}")
             if risk:

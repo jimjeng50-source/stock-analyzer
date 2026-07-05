@@ -50,6 +50,7 @@ class HotStockDetector:
             self.detect_chips_hot(),
             self.detect_social_hot(universe_df),
             self.detect_volume_hot(universe_df),
+            self.detect_research_hot(universe_df),
         ):
             for sid, tag_list in tags.items():
                 hot.setdefault(sid, []).extend(tag_list)
@@ -193,6 +194,17 @@ class HotStockDetector:
         return re.findall(
             r'<div class="title">\s*<a href="[^"]*">([^<]+)</a>', html
         )
+
+    # ── 面向 4：研報面（外資/券商報告公開新聞）───────────────────────────────
+
+    def detect_research_hot(self, universe_df: pd.DataFrame = None) -> dict:
+        """外資/券商報告相關新聞點名的個股（公開新聞來源，非直接爬報告）。"""
+        try:
+            from screener.research_signals import fetch_research_signals
+            return fetch_research_signals(universe_df)
+        except Exception as e:
+            logger.debug("研報信號偵測失敗：%s", e)
+            return {}
 
     # ── 面向 3：量能面（成交值排行）───────────────────────────────────────────
 

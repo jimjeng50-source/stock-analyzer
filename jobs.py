@@ -48,7 +48,7 @@ def job_risk() -> int:
     report = monitor.run_daily()
     if report["has_alerts"]:
         Notifier().send_telegram(monitor.format_message(report))
-        n = sum(len(report[k]) for k in ("market", "positions", "revenue", "eps"))
+        n = sum(len(report[k]) for k in ("market", "positions", "revenue", "eps", "fundamental"))
         logger.info("風險警訊已推播（%d 則）", n)
     else:
         logger.info("今日無風險警訊")
@@ -107,7 +107,93 @@ def job_backfill_history(start_str: str) -> int:
     return 0
 
 
-JOBS = {"scan": job_scan, "risk": job_risk, "backfill": job_backfill}
+def job_report_export() -> int:
+    """
+    產出正確率報告：
+    1. reports/accuracy_report.csv（明細）+ reports/accuracy_summary.md（摘要）
+       → 由 workflow commit 回 repo（方案 A）
+    2. 若設定 GDRIVE_SERVICE_ACCOUNT_JSON + GDRIVE_FOLDER_ID，
+       同步上傳到 Google Drive（方案 B）
+    """
+    import os
+    from datetime import date
+    from screener.recommendation_db import RecommendationDB
+    from screener.historical_eval import evaluate_60d_accuracy
+
+    db = RecommendationDB()
+    os.makedirs("reports", exist_ok=True)
+
+    # 明細 CSV：近一年推薦 + 各期報酬
+    df = db.get_recent_recommendations(n_days=365)
+    csv_path = "reports/accuracy_report.csv"
+    if df.empty:
+        logger.warning("無推薦紀錄，輸出空報告")
+        with open(csv_path, "w", encoding="utf-8-sig") as f:
+            f.write("（尚無推薦紀錄）\n")
+    else:
+        cols = [c for c in (
+            "recommend_date", "rank", "stock_id", "stock_name", "total_score",
+            "current_price", "forward_eps", "eps_growth_pct",
+            "price_5d", "return_5d_pct", "price_20d", "return_20d_pct",
+            "price_60d", "return_60d_pct", "hot_tags", "recommendation",
+        ) if c in df.columns]
+        df[cols].to_csv(csv_path, index=False, encoding="utf-8-sig")
+
+    # 摘要 Markdown
+    perf = db.get_performance_summary(n_days=365)
+    acc = evaluate_60d_accuracy(db, top_k=3)
+    md_path = "reports/accuracy_summary.md"
+
+    def _fmt(v, suffix=""):
+        return f"{v}{suffix}" if v is not None else "—"
+
+    lines = [
+        f"# 推薦正確率報告",
+        f"",
+        f"產出日期：{date.today().isoformat()}",
+        f"",
+        f"## 整體績效（近一年全部推薦）",
+        f"",
+        f"| 指標 | 20 日 | 60 日 |",
+        f"|------|------|------|",
+        f"| 平均報酬 | {_fmt(perf.get('avg_return_20d'), '%')} | {_fmt(perf.get('avg_return_60d'), '%')} |",
+        f"| 勝率 | {_fmt(perf.get('win_rate_20d'))} | {_fmt(perf.get('win_rate_60d'))} |",
+        f"",
+        f"總推薦數：{perf.get('total_recommendations', 0)}｜已評估：{perf.get('evaluated_count', 0)}",
+        f"",
+    ]
+    if acc.get("overall"):
+        o = acc["overall"]
+        lines += [
+            f"## 前 3 名 60 日正確率（主指標）",
+            f"",
+            f"- 平均 60 日報酬：{_fmt(o.get('avg_return_pct'), '%')}",
+            f"- 正確率（正報酬比例）：{_fmt(o.get('win_rate'))}",
+            f"- 樣本數：{o.get('evaluated', 0)}（{o.get('dates', 0)} 個推薦日）",
+            f"",
+        ]
+    lines.append("*由 stock-analyzer 自動產出。僅供研究參考，不構成投資建議。*")
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    logger.info("報告已輸出：%s、%s", csv_path, md_path)
+
+    # 方案 B：Google Drive 上傳（未設定憑證時自動跳過）
+    try:
+        from utils.gdrive import upload_file, is_configured
+        if is_configured():
+            upload_file(csv_path, f"accuracy_report.csv")
+            upload_file(md_path, f"accuracy_summary.md")
+        else:
+            logger.info("Google Drive 未設定，僅輸出到 repo reports/")
+    except Exception as e:
+        logger.warning("Drive 上傳階段異常（報告仍在 reports/）：%s", e)
+
+    return 0
+
+
+JOBS = {"scan": job_scan, "risk": job_risk, "backfill": job_backfill,
+        "report-export": job_report_export}
 
 
 def main():

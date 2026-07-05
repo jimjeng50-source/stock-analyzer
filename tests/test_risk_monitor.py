@@ -29,7 +29,7 @@ class TestPositionRisk:
         df = _recs_df([self._base_row("2330", "台積電", 100.0)])
         with patch("screener.recommendation_db.RecommendationDB.get_recent_recommendations",
                    return_value=df), \
-             patch.object(RiskMonitor, "_bulk_last_prices", return_value={"2330": 90.0}):
+             patch.object(RiskMonitor, "_bulk_last_prices", return_value={"2330": {"price": 87.0, "ma60": None}}):
             alerts = RiskMonitor().check_position_risk()
         assert len(alerts) == 1
         assert alerts[0]["action"] == "stop_loss"
@@ -39,7 +39,7 @@ class TestPositionRisk:
         df = _recs_df([self._base_row("2330", "台積電", 100.0)])
         with patch("screener.recommendation_db.RecommendationDB.get_recent_recommendations",
                    return_value=df), \
-             patch.object(RiskMonitor, "_bulk_last_prices", return_value={"2330": 116.0}):
+             patch.object(RiskMonitor, "_bulk_last_prices", return_value={"2330": {"price": 116.0, "ma60": 100.0}}):
             alerts = RiskMonitor().check_position_risk()
         assert alerts[0]["action"] == "take_profit"
 
@@ -47,7 +47,7 @@ class TestPositionRisk:
         df = _recs_df([self._base_row("2330", "台積電", 100.0, target=110.0)])
         with patch("screener.recommendation_db.RecommendationDB.get_recent_recommendations",
                    return_value=df), \
-             patch.object(RiskMonitor, "_bulk_last_prices", return_value={"2330": 112.0}):
+             patch.object(RiskMonitor, "_bulk_last_prices", return_value={"2330": {"price": 112.0, "ma60": 100.0}}):
             alerts = RiskMonitor().check_position_risk()
         assert alerts[0]["action"] == "target_hit"
 
@@ -55,7 +55,7 @@ class TestPositionRisk:
         df = _recs_df([self._base_row("2330", "台積電", 100.0)])
         with patch("screener.recommendation_db.RecommendationDB.get_recent_recommendations",
                    return_value=df), \
-             patch.object(RiskMonitor, "_bulk_last_prices", return_value={"2330": 103.0}):
+             patch.object(RiskMonitor, "_bulk_last_prices", return_value={"2330": {"price": 103.0, "ma60": 95.0}}):
             alerts = RiskMonitor().check_position_risk()
         assert alerts == []
 
@@ -67,7 +67,7 @@ class TestPositionRisk:
         df = _recs_df([old, new])
         with patch("screener.recommendation_db.RecommendationDB.get_recent_recommendations",
                    return_value=df), \
-             patch.object(RiskMonitor, "_bulk_last_prices", return_value={"2330": 103.0}):
+             patch.object(RiskMonitor, "_bulk_last_prices", return_value={"2330": {"price": 103.0, "ma60": 95.0}}):
             alerts = RiskMonitor().check_position_risk()
         assert alerts == []   # vs 100 → +3%，非 vs 200 → -48%
 
@@ -151,3 +151,69 @@ class TestRunDailyAndFormat:
         assert "營收動態" in msg
         assert "Forward EPS" not in msg      # 空區塊不顯示
         assert "不構成投資建議" in msg
+
+
+class TestMA60StopLoss:
+    def test_below_ma60_with_loss_alerts(self):
+        """未達 -12% 但跌破 60 日線且虧損 → 趨勢轉弱警訊。"""
+        df = pd.DataFrame([{
+            "recommend_date": (date.today() - timedelta(days=10)).isoformat(),
+            "stock_id": "2330", "stock_name": "台積電",
+            "current_price": 100.0, "target_price": None,
+        }])
+        with patch("screener.recommendation_db.RecommendationDB.get_recent_recommendations",
+                   return_value=df), \
+             patch.object(RiskMonitor, "_bulk_last_prices",
+                          return_value={"2330": {"price": 95.0, "ma60": 98.0}}):
+            alerts = RiskMonitor().check_position_risk()
+        assert len(alerts) == 1
+        assert alerts[0]["action"] == "stop_loss"
+        assert "60 日線" in alerts[0]["msg"]
+
+    def test_below_ma60_but_profitable_no_alert(self):
+        """跌破 60 日線但仍獲利 → 不警示（避免噪音）。"""
+        df = pd.DataFrame([{
+            "recommend_date": (date.today() - timedelta(days=10)).isoformat(),
+            "stock_id": "2330", "stock_name": "台積電",
+            "current_price": 100.0, "target_price": None,
+        }])
+        with patch("screener.recommendation_db.RecommendationDB.get_recent_recommendations",
+                   return_value=df), \
+             patch.object(RiskMonitor, "_bulk_last_prices",
+                          return_value={"2330": {"price": 105.0, "ma60": 108.0}}):
+            alerts = RiskMonitor().check_position_risk()
+        assert alerts == []
+
+
+class TestFundamentalRisk:
+    def test_consecutive_revenue_decline_alerts(self):
+        df = pd.DataFrame([{
+            "recommend_date": date.today().isoformat(),
+            "stock_id": "2330", "stock_name": "台積電",
+        }])
+        rev = pd.DataFrame({"revenue_yoy": [5.0, -3.0, -8.0]})
+        fetcher = MagicMock()
+        fetcher.get_monthly_revenue.return_value = rev
+        with patch("screener.recommendation_db.RecommendationDB.get_recent_recommendations",
+                   return_value=df), \
+             patch("data.fetcher.DataFetcher", return_value=fetcher), \
+             patch.object(RiskMonitor, "_fetch_conference_schedule", return_value={}):
+            alerts = RiskMonitor().check_fundamental_risk()
+        assert len(alerts) == 1
+        assert alerts[0]["type"] == "revenue_decline"
+        assert "連 2 個月衰退" in alerts[0]["msg"]
+
+    def test_conference_within_3_days_alerts(self):
+        df = pd.DataFrame([{
+            "recommend_date": date.today().isoformat(),
+            "stock_id": "2330", "stock_name": "台積電",
+        }])
+        fetcher = MagicMock()
+        fetcher.get_monthly_revenue.return_value = pd.DataFrame({"revenue_yoy": [5.0, 8.0]})
+        conf = {"2330": date.today() + timedelta(days=2)}
+        with patch("screener.recommendation_db.RecommendationDB.get_recent_recommendations",
+                   return_value=df), \
+             patch("data.fetcher.DataFetcher", return_value=fetcher), \
+             patch.object(RiskMonitor, "_fetch_conference_schedule", return_value=conf):
+            alerts = RiskMonitor().check_fundamental_risk()
+        assert any(a["type"] == "conference" for a in alerts)

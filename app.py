@@ -51,11 +51,11 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("因子權重（%）")
-    w_chips = st.slider("籌碼面", 0, 100, 30, step=5)
-    w_fund  = st.slider("基本面", 0, 100, 25, step=5)
-    w_tech  = st.slider("技術面", 0, 100, 20, step=5)
-    w_mom   = st.slider("動能面", 0, 100, 15, step=5)
-    w_risk  = st.slider("風險面", 0, 100, 10, step=5)
+    w_chips = st.slider("籌碼面", 0, 100, 20, step=5)
+    w_fund  = st.slider("基本面", 0, 100, 45, step=5)
+    w_tech  = st.slider("技術面", 0, 100, 10, step=5)
+    w_mom   = st.slider("動能面", 0, 100, 10, step=5)
+    w_risk  = st.slider("風險面", 0, 100, 15, step=5)
 
     total_w = w_chips + w_fund + w_tech + w_mom + w_risk
     if total_w != 100:
@@ -937,15 +937,18 @@ with tab4:
     st.markdown("""
 | 面向 | 權重 | 核心邏輯 |
 |------|------|---------|
-| 籌碼面 | **30%** | 法人動向是最直接的主力意圖指標 |
-| 基本面 | **25%** | 企業獲利成長是股價長期支撐 |
-| 技術面 | **20%** | 價量結構反映市場多空力道 |
-| 動能面 | **15%** | 趨勢持續性與加速度 |
-| 風險面 | **10%** | 以波動度衡量投資風險 |
+| 基本面 | **45%** | 企業獲利成長是股價長期支撐（穩健投資核心）|
+| 籌碼面 | **20%** | 法人動向在台股仍具領先性 |
+| 風險面 | **15%** | 以波動度衡量投資風險 |
+| 技術面 | **10%** | 價量結構反映市場多空力道 |
+| 動能面 | **10%** | 趨勢持續性與加速度 |
+
+另外，Top 20 深度分析後會以 **Forward EPS 前瞻分數**（預估成長率＋上檔空間）
+佔 25% 權重重新排名，確保最終推薦以基本面前景為優先。
 """)
 
     # ── 籌碼面 ───────────────────────────────────────────────────────────────
-    with st.expander("🔵 籌碼面因子（權重 30%）", expanded=True):
+    with st.expander("🔵 籌碼面因子（權重 20%）", expanded=True):
         st.markdown("""
 | 因子代碼 | 名稱 | 計算方式 | 正面訊號 |
 |----------|------|----------|---------|
@@ -1755,9 +1758,15 @@ with tab9:
                         _top = _sum.get("top_score", 0)
                         _failed = _sum.get("failed_count", 0)
                         _scored = _sum.get("scored_count", 0)
-                        st.warning(
-                            f"今日無個股達推薦門檻（{_MIN_SCORE} 分）— 最高分 {_top:.0f} 分。"
-                        )
+                        _regime = scan_result.get("regime_warnings", [])
+                        if _regime:
+                            st.warning("🚦 大盤風險閘門啟動 — 今日推薦降級為觀察名單（不建議建倉）")
+                            for _w in _regime:
+                                st.error(_w)
+                        else:
+                            st.warning(
+                                f"今日無個股達推薦門檻（{_MIN_SCORE} 分）— 最高分 {_top:.0f} 分。"
+                            )
                         if _scored and _failed and _failed >= _scored * 0.3:
                             st.error(
                                 f"⚠️ {_failed}/{_scored + _failed} 支評分失敗（可能是 API 配額問題），"
@@ -1815,7 +1824,7 @@ with tab9:
                 feps_str = "—"
             if price:
                 _tp_ref = tp if tp else price * 1.15
-                sl_tp_str = f"🛡️ 停損參考 NT${price*0.92:,.0f}（-8%）　|　停利參考 NT${_tp_ref:,.0f}"
+                sl_tp_str = f"🛡️ 停損參考 NT${price*0.88:,.0f}（-12% 或跌破60日線）　|　停利參考 NT${_tp_ref:,.0f}"
             else:
                 sl_tp_str = ""
 
@@ -1847,14 +1856,16 @@ with tab9:
 
     st.markdown("---")
 
-    # ── 績效追蹤 ──────────────────────────────────────────────────────────────
+    # ── 績效追蹤（穩健長線導向：以 20/60 日為主指標）─────────────────────────
     st.markdown("### 📊 歷史推薦績效追蹤")
-    perf = _rec_db.get_performance_summary(n_days=90)
+    perf = _rec_db.get_performance_summary(n_days=180)
     p1, p2, p3, p4 = st.columns(4)
-    p1.metric("平均 5 日報酬", f"{perf['avg_return_5d']:+.1f}%" if perf.get("avg_return_5d") is not None else "—")
-    p2.metric("平均 20 日報酬", f"{perf['avg_return_20d']:+.1f}%" if perf.get("avg_return_20d") is not None else "—")
-    p3.metric("5 日勝率", f"{perf['win_rate_5d']*100:.0f}%" if perf.get("win_rate_5d") is not None else "—")
-    p4.metric("已評估推薦數", str(perf.get("evaluated_count", 0)))
+    p1.metric("平均 20 日報酬", f"{perf['avg_return_20d']:+.1f}%" if perf.get("avg_return_20d") is not None else "—")
+    p2.metric("20 日勝率", f"{perf['win_rate_20d']*100:.0f}%" if perf.get("win_rate_20d") is not None else "—")
+    p3.metric("平均 60 日報酬", f"{perf['avg_return_60d']:+.1f}%" if perf.get("avg_return_60d") is not None else "—")
+    p4.metric("60 日勝率", f"{perf['win_rate_60d']*100:.0f}%" if perf.get("win_rate_60d") is not None else "—")
+    _p5 = f"{perf['avg_return_5d']:+.1f}%" if perf.get("avg_return_5d") is not None else "—"
+    st.caption(f"短線參考：平均 5 日報酬 {_p5}｜已評估推薦數 {perf.get('evaluated_count', 0)}")
 
     recent_df = _rec_db.get_recent_recommendations(n_days=30)
     if not recent_df.empty:
