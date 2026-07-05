@@ -24,7 +24,7 @@ from datetime import timedelta
 
 warnings.filterwarnings("ignore")
 
-from config import FINMIND_TOKEN
+from config import get_runtime_config
 from utils.tz import now_tw
 
 _FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
@@ -49,7 +49,7 @@ def _fm_stock(stock_id: str, days: int = 45) -> pd.DataFrame:
             "data_id": stock_id,
             "start_date": start,
             "end_date": end.strftime("%Y-%m-%d"),
-            "token": FINMIND_TOKEN,
+            "token": get_runtime_config("FINMIND_TOKEN"),
         }, timeout=15)
         body = resp.json()
         if body.get("status") == 200 and body.get("data"):
@@ -216,7 +216,7 @@ def compute_institutional_signals() -> dict:
         "available": bool,
     }
     """
-    if not FINMIND_TOKEN:
+    if not get_runtime_config("FINMIND_TOKEN"):
         return _empty_result()
 
     data = _aggregate_all(days=45)

@@ -18,8 +18,12 @@ on:
       job:
         description: "要執行的任務"
         type: choice
-        options: [scan, risk, backfill, all]
+        options: [scan, risk, backfill, backfill-history, all]
         default: all
+      start_date:
+        description: "backfill-history 起始日（YYYY-MM-DD）"
+        default: "2026-06-01"
+        required: false
 
 concurrency:
   group: daily-jobs
@@ -61,6 +65,11 @@ jobs:
       - name: Performance backfill
         if: github.event.schedule == '0 1 * * 1' || inputs.job == 'backfill' || inputs.job == 'all'
         run: python jobs.py backfill
+
+      # ── 手動：歷史推薦回補 ───────────────────────────────────────
+      - name: History backfill
+        if: inputs.job == 'backfill-history'
+        run: python jobs.py backfill-history --start "${{ inputs.start_date }}"
 
       # ── 把更新後的資料庫 commit 回 repo（推薦歷史持久化）─────────
       - name: Commit updated databases

@@ -9,7 +9,7 @@ warnings.filterwarnings("ignore")
 
 from utils.tz import now_tw
 
-from config import FINMIND_TOKEN
+from config import get_runtime_config
 
 _FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 
@@ -22,7 +22,7 @@ def _fm_get(dataset: str, data_id: str = "", days: int = 90) -> pd.DataFrame:
             "dataset": dataset,
             "start_date": start,
             "end_date": end.strftime("%Y-%m-%d"),
-            "token": FINMIND_TOKEN,
+            "token": get_runtime_config("FINMIND_TOKEN"),
         }
         if data_id:
             params["data_id"] = data_id
@@ -59,7 +59,7 @@ def compute_futures() -> dict:
         "futures_score": 0.5,
     }
 
-    if not FINMIND_TOKEN:
+    if not get_runtime_config("FINMIND_TOKEN"):
         return result
 
     # 台指期外資未平倉，明確指定 data_id="TX"（台指期）
