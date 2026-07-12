@@ -81,6 +81,7 @@ class DailyRecommender:
             "market_context": "",
             "message": "",
             "error": None,
+            "no_candidates": False,
         }
 
         try:
@@ -106,7 +107,16 @@ class DailyRecommender:
             logger.info("過濾後：%d 支", after_filter_count)
 
             if passed_df.empty:
-                result["error"] = "過濾後無候選股票"
+                # 非硬錯誤：流程正常但今日無符合過濾條件個股
+                result["no_candidates"] = True
+                result["scan_summary"] = {
+                    "universe_count": universe_count,
+                    "after_filter_count": 0,
+                    "scored_count": 0, "failed_count": 0,
+                    "scan_duration_sec": round(time.time() - start_time, 1),
+                    "top_score": 0,
+                }
+                result["message"] = self._format_message(result)
                 return result
 
             # Phase 3 — 批次評分，取 Top 20
@@ -133,7 +143,32 @@ class DailyRecommender:
             ].head(20)
 
             if top20_df.empty:
-                result["error"] = f"無股票達到評分門檻（{SCREENER_QUICK_SCORE_THRESHOLD} 分）"
+                # 非硬錯誤：評分完成但無個股達快篩門檻。附最高分觀察名單，正常回傳。
+                result["no_candidates"] = True
+                result["watch_list"] = [
+                    {
+                        "stock_id": str(row["stock_id"]),
+                        "stock_name": row.get("stock_name", row["stock_id"]),
+                        "total_score": round(float(row["total_score"]), 1),
+                        "current_price": row.get("current_price"),
+                        "hot_tags": hot_tags_map.get(str(row["stock_id"]), []),
+                    }
+                    for _, row in scored_df.head(3).iterrows()
+                ]
+                result["scan_summary"] = {
+                    "universe_count": universe_count,
+                    "after_filter_count": after_filter_count,
+                    "scored_count": scored_count, "failed_count": failed_count,
+                    "scan_duration_sec": round(time.time() - start_time, 1),
+                    "top_score": float(scored_df["total_score"].max()) if not scored_df.empty else 0,
+                }
+                result["market_context"] = self._generate_market_context(scored_df)
+                result["message"] = self._format_message(result)
+                logger.info(
+                    "無個股達快篩門檻（%d 分），最高分 %.1f",
+                    SCREENER_QUICK_SCORE_THRESHOLD,
+                    float(scored_df["total_score"].max()) if not scored_df.empty else 0,
+                )
                 return result
 
             # Phase 4 — 深度分析（Forward EPS + 產業鏈）

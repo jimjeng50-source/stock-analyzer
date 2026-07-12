@@ -24,18 +24,35 @@ logger = logging.getLogger("jobs")
 
 def job_scan() -> int:
     """每日全市場掃描 → 推薦 → Telegram 推播。"""
+    from config import get_runtime_config
     from screener.recommender import DailyRecommender
     from alerts.notifier import Notifier
 
+    # 前置檢查：基本面佔 45% 權重，缺 FINMIND_TOKEN 會導致全部分數被低估、
+    # 掃不出候選股。這是設定錯誤，明確報錯（exit 1）讓使用者去設 secret。
+    if not get_runtime_config("FINMIND_TOKEN"):
+        logger.error("FINMIND_TOKEN 未設定 — 無法取得財報/籌碼資料，掃描會失真。"
+                     "請在 GitHub Actions Secrets 設定 FINMIND_TOKEN。")
+        Notifier().send_telegram(
+            "❌ 每日掃描無法執行：FINMIND_TOKEN 未設定。\n"
+            "請到 repo Settings → Secrets and variables → Actions 設定 FINMIND_TOKEN。"
+        )
+        return 1
+
     result = DailyRecommender().run(dry_run=False)
+
+    # 硬錯誤（資料抓取失敗、例外）→ exit 1 並通知
     if result.get("error"):
         logger.error("掃描失敗：%s", result["error"])
-        # 失敗也通知，避免默默斷更
         Notifier().send_telegram(f"❌ 每日掃描失敗：{result['error']}")
         return 1
 
+    # 軟性無候選（流程正常但今日無達標個股）→ 仍推播訊息，正常結束
     Notifier().send_telegram(result["message"])
-    logger.info("已推播 %d 支推薦", len(result["recommendations"]))
+    if result.get("no_candidates") or not result["recommendations"]:
+        logger.info("今日無達標推薦（已推播說明訊息）")
+    else:
+        logger.info("已推播 %d 支推薦", len(result["recommendations"]))
     return 0
 
 
