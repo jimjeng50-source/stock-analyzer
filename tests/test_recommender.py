@@ -132,3 +132,24 @@ class TestDailyRecommender:
         assert "無個股達推薦門檻" in result["message"]
         assert "觀察名單" in result["message"]
         assert "66" in result["message"]                        # 顯示最高分
+
+    def test_no_candidates_when_all_below_quick_threshold(self, mock_universe_df):
+        """全部低於快篩門檻（60）→ no_candidates（非硬錯誤），仍有觀察名單與訊息。"""
+        very_low = pd.DataFrame([
+            {"stock_id": "2330", "stock_name": "台積電", "industry": "半導體",
+             "total_score": 52.0, "recommendation": "觀望",
+             "chips_score": 50, "fundamental_score": 55, "technical_score": 48,
+             "momentum_score": 50, "risk_score": 55, "current_price": 850.0, "error": ""},
+            {"stock_id": "2317", "stock_name": "鴻海", "industry": "電子",
+             "total_score": 45.0, "recommendation": "觀望",
+             "chips_score": 44, "fundamental_score": 48, "technical_score": 42,
+             "momentum_score": 46, "risk_score": 50, "current_price": 180.0, "error": ""},
+        ])
+        result, save_called = _run_with_mocks(mock_universe_df, very_low, dry_run=False)
+
+        assert result["error"] is None            # 不是硬錯誤
+        assert result["no_candidates"] is True
+        assert result["recommendations"] == []
+        assert len(result["watch_list"]) == 2
+        assert result["message"]                  # 有推播訊息
+        assert save_called is False
