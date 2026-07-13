@@ -60,26 +60,29 @@ jobs:
         run: python jobs.py scan
 
       - name: Risk alert
-        if: github.event.schedule == '0 9 * * 1-5' || inputs.job == 'risk' || inputs.job == 'all'
+        # always()：即使掃描步驟失敗，仍執行風險警訊，避免連帶被跳過
+        if: ${{ always() && (github.event.schedule == '0 9 * * 1-5' || inputs.job == 'risk' || inputs.job == 'all') }}
         run: python jobs.py risk
 
       # ── 週一 09:00：績效回填 ─────────────────────────────────────
       - name: Performance backfill
-        if: github.event.schedule == '0 1 * * 1' || inputs.job == 'backfill' || inputs.job == 'all'
+        if: ${{ always() && (github.event.schedule == '0 1 * * 1' || inputs.job == 'backfill' || inputs.job == 'all') }}
         run: python jobs.py backfill
 
       # ── 手動：歷史推薦回補 ───────────────────────────────────────
       - name: History backfill
-        if: inputs.job == 'backfill-history'
+        if: ${{ always() && inputs.job == 'backfill-history' }}
         run: python jobs.py backfill-history --start "${{ inputs.start_date }}"
 
       # ── 週一（回填後）＋手動：正確率報告輸出（repo + Google Drive）──
       - name: Accuracy report export
-        if: github.event.schedule == '0 1 * * 1' || inputs.job == 'report-export' || inputs.job == 'backfill-history' || inputs.job == 'all'
+        if: ${{ always() && (github.event.schedule == '0 1 * * 1' || inputs.job == 'report-export' || inputs.job == 'backfill-history' || inputs.job == 'all') }}
         run: python jobs.py report-export
 
       # ── 把更新後的資料庫 commit 回 repo（推薦歷史持久化）─────────
+      # always()：無論前面步驟成敗，只要有產生新資料就 commit，確保不流失
       - name: Commit updated databases
+        if: ${{ always() }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
