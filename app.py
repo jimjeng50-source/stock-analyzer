@@ -47,7 +47,28 @@ with st.sidebar:
     st.title("⚙️ 分析設定")
 
     # ── Tab1：個股分析 ────────────────────────────────────────────────────────
-    stock_id = st.text_input("股票代號", value="2330", max_chars=10).strip()
+    stock_query = st.text_input("股票代號或名稱", value="2330", max_chars=20,
+                                help="可輸入代號（如 2330）或公司名稱（如 台積電）").strip()
+    # 解析輸入 → stock_id
+    stock_id = stock_query
+    _resolved_name = None
+    if stock_query:
+        try:
+            from utils.stock_lookup import resolve as _resolve_stock
+            _r = _resolve_stock(stock_query)
+            if _r["ok"]:
+                stock_id = _r["stock_id"]
+                _resolved_name = _r["stock_name"]
+                if _resolved_name and _resolved_name != stock_query:
+                    st.caption(f"✅ {stock_id} {_resolved_name}")
+            elif _r["candidates"]:
+                _opts = {f"{c['stock_id']} {c['stock_name']}": c["stock_id"] for c in _r["candidates"]}
+                _pick = st.selectbox("符合多筆，請選擇", list(_opts.keys()), key="stock_pick")
+                stock_id = _opts[_pick]
+            else:
+                st.caption(f"⚠️ 找不到「{stock_query}」，將直接以此為代號嘗試")
+        except Exception:
+            pass
 
     st.markdown("---")
     st.subheader("因子權重（%）")
@@ -89,9 +110,9 @@ with st.sidebar:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 頁籤
 # ═══════════════════════════════════════════════════════════════════════════════
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab11, tab10 = st.tabs([
     "📊 個股分析", "🌐 總體資金面", "📈 回測驗證", "📚 因子說明", "🛡️ 風險監控",
-    "🎯 Forward EPS", "🔗 產業鏈分析", "📅 月營收追蹤", "🏆 每日推薦", "⚙️ 設定",
+    "🎯 Forward EPS", "🔗 產業鏈分析", "📅 月營收追蹤", "🏆 每日推薦", "🧺 候選池分析", "⚙️ 設定",
 ])
 
 
@@ -2158,3 +2179,159 @@ with tab10:
         "💡 金鑰儲存在伺服器本機 `data/local_config.json`（已加入 .gitignore）。"
         "若同時設定了環境變數（.env / Render 環境設定），local_config.json 優先。"
     )
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Tab 11：候選池分析
+# ───────────────────────────────────────────────────────────────────────────────
+with tab11:
+    from datetime import date as _date
+    st.markdown("## 🧺 候選池全工具分析")
+    st.markdown(
+        "貼上一組股票（**代號或公司名稱皆可**，用逗號、空白或換行分隔），"
+        "系統會對每一支跑完整分析工具鏈並排序。"
+    )
+
+    with st.expander("ℹ️ 這裡會跑哪些工具？", expanded=False):
+        st.markdown("""
+| 工具 | 產出 | 說明 |
+|------|------|------|
+| **多因子評分** | 綜合分 0–100＋五面向分 | 籌碼(20%)、**基本面(45%)**、技術(10%)、動能(10%)、風險(15%) 加權 |
+| **Forward EPS** | 前瞻 EPS、預估成長率 | 由歷史財報與營收動能推估未來一年每股盈餘 |
+| **目標價／上檔空間** | 目標價、潛在漲幅 | Forward EPS × 合理本益比推得 |
+| **產業鏈信號** | 所屬產業鏈、信號強度 | 上中下游外資籌碼的領先-落後關係 |
+
+> 以「基本面優先」配置排序，適合中長線穩健選股。分析為量化模型輸出，僅供研究參考。
+""")
+
+    _pool_raw = st.text_area(
+        "候選清單",
+        value="2330, 台積電\n2317 鴻海\n聯發科",
+        height=120,
+        help="範例：2330, 台積電, 2454 — 代號與名稱可混用",
+        key="pool_input",
+    )
+    _pool_col1, _pool_col2 = st.columns([1, 3])
+    with _pool_col1:
+        _pool_run = st.button("🚀 分析候選池", type="primary", key="pool_run_btn")
+
+    if _pool_run:
+        from utils.stock_lookup import parse_pool_input, resolve_many
+
+        queries = parse_pool_input(_pool_raw)
+        if not queries:
+            st.warning("請至少輸入一支股票。")
+            st.stop()
+
+        with st.spinner("解析代號/名稱..."):
+            resolved = resolve_many(queries)
+
+        # 顯示解析結果
+        if resolved["unresolved"]:
+            st.warning("⚠️ 無法辨識：" + "、".join(resolved["unresolved"]))
+        if resolved["ambiguous"]:
+            for amb in resolved["ambiguous"]:
+                _opts = {f"{c['stock_id']} {c['stock_name']}": c
+                         for c in amb["candidates"]}
+                st.info(f"「{amb['input']}」符合多筆，請改用代號：" +
+                        "、".join(_opts.keys()))
+
+        picks = resolved["resolved"]
+        if not picks:
+            st.error("沒有可分析的有效股票，請確認輸入。")
+            st.stop()
+
+        st.success(f"✅ 解析出 {len(picks)} 支：" +
+                   "、".join(f"{p['stock_id']} {p['stock_name']}" for p in picks))
+
+        name_map = {p["stock_id"]: p["stock_name"] for p in picks}
+        ids = [p["stock_id"] for p in picks]
+
+        _prog = st.progress(0.0)
+        _prog_txt = st.empty()
+
+        def _cb(done, total, stage):
+            _prog.progress(min(done / max(total, 1), 1.0))
+            _prog_txt.caption(f"{stage}：{done}/{total}")
+
+        from screener.pool_analyzer import analyze_pool
+        with st.spinner("執行全工具分析（依候選數約需 1–5 分鐘）..."):
+            pool_df = analyze_pool(ids, name_map=name_map, progress_callback=_cb)
+        _prog.empty()
+        _prog_txt.empty()
+
+        if pool_df.empty:
+            st.error("分析無結果，請確認 FINMIND_TOKEN 已設定。")
+            st.stop()
+
+        st.session_state["pool_result"] = pool_df
+
+    # 顯示結果（存在 session_state 以便切分頁後保留）
+    pool_df = st.session_state.get("pool_result")
+    if pool_df is not None and not pool_df.empty:
+        st.markdown("### 📋 分析結果（依綜合分排序）")
+
+        _show = pool_df.copy()
+        _disp_cols = [c for c in [
+            "stock_id", "stock_name", "total_score", "recommendation",
+            "current_price", "forward_eps", "eps_growth_pct",
+            "target_price", "upside_pct",
+            "fundamental_score", "chips_score", "technical_score",
+            "momentum_score", "risk_score", "chain_name", "error",
+        ] if c in _show.columns]
+        st.dataframe(
+            _show[_disp_cols].rename(columns={
+                "stock_id": "代號", "stock_name": "名稱", "total_score": "綜合分",
+                "recommendation": "建議", "current_price": "現價",
+                "forward_eps": "Forward EPS", "eps_growth_pct": "EPS成長%",
+                "target_price": "目標價", "upside_pct": "上檔%",
+                "fundamental_score": "基本面", "chips_score": "籌碼",
+                "technical_score": "技術", "momentum_score": "動能",
+                "risk_score": "風險", "chain_name": "產業鏈", "error": "備註",
+            }),
+            use_container_width=True, hide_index=True,
+        )
+
+        _csv = _show.to_csv(index=False, encoding="utf-8-sig")
+        st.download_button("📥 下載分析結果 CSV", data=_csv,
+                           file_name=f"pool_analysis_{_date.today()}.csv",
+                           mime="text/csv", key="pool_csv")
+
+        # 個股明細卡片
+        st.markdown("### 🔍 個股明細")
+        for _, row in _show.iterrows():
+            if row.get("error"):
+                st.markdown(f"**{row['stock_id']} {row.get('stock_name','')}** — ⚠️ {row['error']}")
+                continue
+            score = row.get("total_score") or 0
+            _color = "#6bcb77" if score >= 70 else ("#ffd166" if score >= 55 else "#ff7b72")
+            feps = row.get("forward_eps")
+            feps_g = row.get("eps_growth_pct")
+            tp = row.get("target_price")
+            up = row.get("upside_pct")
+            feps_str = (f"{feps:.2f} 元" + (f"（成長 {feps_g:+.0f}%）" if feps_g is not None else "")) if feps is not None else "—"
+            tp_str = (f"NT${tp:,.0f}（{up:+.0f}%）" if (tp and up is not None) else "—")
+            with st.expander(f"{row['stock_id']} {row.get('stock_name','')}　綜合分 {score:.0f}"):
+                st.markdown(
+                    f"<span style='color:{_color};font-size:1.4em;font-weight:700'>{score:.1f}/100</span>"
+                    f"　{row.get('recommendation','')}",
+                    unsafe_allow_html=True,
+                )
+                m1, m2, m3 = st.columns(3)
+                m1.metric("現價", f"NT${(row.get('current_price') or 0):,.1f}")
+                m2.metric("Forward EPS", feps_str)
+                m3.metric("目標價", tp_str)
+                st.markdown("**五面向評分**")
+                f1, f2, f3, f4, f5 = st.columns(5)
+                f1.metric("基本面", f"{row.get('fundamental_score') or 0:.0f}")
+                f2.metric("籌碼", f"{row.get('chips_score') or 0:.0f}")
+                f3.metric("技術", f"{row.get('technical_score') or 0:.0f}")
+                f4.metric("動能", f"{row.get('momentum_score') or 0:.0f}")
+                f5.metric("風險", f"{row.get('risk_score') or 0:.0f}")
+                if row.get("chain_name"):
+                    _sig = row.get("chain_signal")
+                    st.caption(f"🔗 所屬產業鏈：{row['chain_name']}" +
+                               (f"（信號 {_sig:+.2f}）" if _sig is not None else ""))
+
+        st.markdown("---")
+        st.caption("⚠️ 本分析由量化模型自動產出，僅供學習與研究參考，不構成任何投資建議。")
