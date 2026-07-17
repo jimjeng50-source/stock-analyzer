@@ -1364,6 +1364,16 @@ with tab6:
                 help="對主力產品報價的預期變動（如 DRAM +30）。留 0 不啟用。"
                      "對庫存重估型公司會加算報價情境。",
             )
+        # 進階：手動輸入市場共識 / 公司財測（若你有券商報告或法說會數字）
+        with st.expander("➕ 進階：手動輸入市場共識 / 公司財測 EPS（選填）"):
+            _mc1, _mc2 = st.columns(2)
+            eps_consensus = _mc1.number_input(
+                "市場共識 EPS（外資/投顧平均）", value=0.0, step=0.5, key="eps_consensus",
+                help="無免費資料源。若你看到券商報告的預估 EPS 可填入比較。留 0 不啟用。")
+            eps_guidance = _mc2.number_input(
+                "公司財測 EPS（法說會指引）", value=0.0, step=0.5, key="eps_guidance",
+                help="台股多數不提供正式 EPS 財測。若有可填入。留 0 不啟用。")
+
         # 解析代號/名稱
         eps_stock = eps_query
         if eps_query:
@@ -1389,6 +1399,8 @@ with tab6:
                     eps_result = calc.calculate(
                         eps_stock,
                         product_price_chg_pct=(eps_price_chg or None),
+                        consensus_eps=(eps_consensus or None),
+                        guidance_eps=(eps_guidance or None),
                     )
                     _eps_ok = True
                 except Exception as e:
@@ -1432,6 +1444,46 @@ with tab6:
                         f'　{eps_result.get("confidence_reason", "")}</div>',
                         unsafe_allow_html=True,
                     )
+
+                    # 資料不足診斷（多項缺漏時，最可能是 token 未設）
+                    _cr = eps_result.get("confidence_reason", "")
+                    if "insufficient" in _cr:
+                        st.warning(
+                            "⚠️ 偵測到多項財報資料缺漏（Forward EPS 因此接近 TTM）。"
+                            "最可能原因：**FINMIND_TOKEN 未設定或配額不足** — "
+                            "個股財報/毛利/本益比需要 FinMind 付費資料。"
+                            "請到「⚙️ 設定」確認 Token，或稍後重試。"
+                        )
+
+                    # ── 多算法比較表 ──────────────────────────────────────
+                    methods = eps_result.get("methods", {})
+                    if methods:
+                        st.markdown("---")
+                        st.markdown("#### 🧮 多種 Forward EPS 算法比較")
+                        _rows = []
+                        for _key in ["quant_base", "quant_inventory", "scenario",
+                                     "consensus", "guidance"]:
+                            _m = methods.get(_key)
+                            if not _m:
+                                continue
+                            if _key == "scenario":
+                                _eps_disp = (f"{_m['bear']:.2f} / {_m['base']:.2f} / {_m['bull']:.2f}"
+                                             if _m.get("available") else "—")
+                            else:
+                                _eps_disp = (f"{_m['eps']:.2f}" if _m.get("available") and _m.get("eps") is not None else "—")
+                            _rows.append({
+                                "算法": _m["label"],
+                                "Forward EPS": _eps_disp,
+                                "資料來源": _m["source"],
+                                "狀態/說明": ("✅ " + _m.get("note", "") if _m.get("available")
+                                            else "⚪ " + _m.get("note", "無資料")),
+                            })
+                        st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+                        st.caption(
+                            "💡 **定量模型-基礎**＝原本算法（營收成長×毛利趨勢）；"
+                            "**含庫存重估**＝再加低價庫存×報價信號（威剛型）；"
+                            "**情境敏感度**＝三情境；**市場共識/公司財測**需手動輸入（無免費資料源）。"
+                        )
 
                     # ── 三情境目標價長條圖 ────────────────────────────────
                     st.markdown("---")
