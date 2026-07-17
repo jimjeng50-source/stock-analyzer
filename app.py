@@ -1345,25 +1345,51 @@ with tab5:
 # ───────────────────────────────────────────────────────────────────────────────
 with tab6:
     st.subheader("🎯 Forward EPS 推估與目標價分析")
-    st.caption("以 TTM EPS × 營收成長率 × 毛利趨勢修正，推估未來 12 個月 EPS 與三情境目標價")
+    st.caption("以 TTM EPS × 營收成長 × 毛利趨勢 × **庫存重估信號** 推估未來 12 個月 EPS 與三情境目標價"
+               "（庫存重估：低價庫存 × 報價上漲，如威剛 DRAM）")
 
     if not FINMIND_TOKEN:
         st.warning("📌 需要 FinMind Token 才能取得財報資料，請在 .env 或 Streamlit Secrets 中設定 FINMIND_TOKEN")
     else:
-        eps_stock = st.text_input(
-            "分析股票代號", value=stock_id or "2330", max_chars=10, key="eps_stock_input"
-        ).strip()
+        _eps_in1, _eps_in2 = st.columns([2, 1])
+        with _eps_in1:
+            eps_query = st.text_input(
+                "分析股票代號或名稱", value=stock_id or "2330", max_chars=20,
+                key="eps_stock_input", help="可輸入代號或公司名稱（如 威剛）",
+            ).strip()
+        with _eps_in2:
+            eps_price_chg = st.number_input(
+                "產品報價看法 %（選填）", value=0, min_value=-90, max_value=300, step=5,
+                key="eps_price_chg",
+                help="對主力產品報價的預期變動（如 DRAM +30）。留 0 不啟用。"
+                     "對庫存重估型公司會加算報價情境。",
+            )
+        # 解析代號/名稱
+        eps_stock = eps_query
+        if eps_query:
+            try:
+                from utils.stock_lookup import resolve as _resolve_stock
+                _er = _resolve_stock(eps_query)
+                if _er["ok"]:
+                    eps_stock = _er["stock_id"]
+                    if _er["stock_name"] and _er["stock_name"] != eps_query:
+                        st.caption(f"✅ {eps_stock} {_er['stock_name']}")
+            except Exception:
+                pass
         eps_btn = st.button("📊 計算 Forward EPS", type="primary", key="eps_calc_btn")
 
         if eps_btn and eps_stock:
-            with st.spinner(f"正在計算 {eps_stock} Forward EPS..."):
+            with st.spinner(f"正在計算 {eps_stock} Forward EPS（含存貨動態）..."):
                 try:
                     from data.fetcher import DataFetcher
                     from factors.forward_eps import ForwardEPSCalculator
 
                     df = DataFetcher()
                     calc = ForwardEPSCalculator(df)
-                    eps_result = calc.calculate(eps_stock)
+                    eps_result = calc.calculate(
+                        eps_stock,
+                        product_price_chg_pct=(eps_price_chg or None),
+                    )
                     _eps_ok = True
                 except Exception as e:
                     st.error(f"計算失敗：{e}")
@@ -1461,6 +1487,60 @@ with tab6:
                             f'</div>',
                             unsafe_allow_html=True,
                         )
+
+                    # ── 存貨動態與庫存重估信號 ────────────────────────────
+                    inv_dyn = eps_result.get("inventory_dynamics")
+                    if inv_dyn and not inv_dyn.get("error"):
+                        st.markdown("---")
+                        st.markdown("#### 📦 存貨動態與庫存重估信號")
+                        st.caption(
+                            "捕捉記憶體模組/面板/原物料等「庫存重估」型公司的獲利拐點："
+                            "低價庫存 × 報價上漲（如威剛 DRAM），單看營收趨勢看不到。"
+                        )
+                        _rs = inv_dyn.get("revaluation_score", 0)
+                        _rs_color = "#6bcb77" if _rs >= 0.3 else "#ff6b6b" if _rs <= -0.3 else "#ffd93d"
+                        iv1, iv2, iv3, iv4 = st.columns(4)
+                        _dsi = inv_dyn.get("dsi_latest")
+                        _dsi_t = inv_dyn.get("dsi_trend")
+                        iv1.metric("存貨週轉天數",
+                                   f"{_dsi:.0f} 天" if _dsi is not None else "—",
+                                   delta=(f"{_dsi_t:+.0f} 天" if _dsi_t is not None else None),
+                                   delta_color="inverse")
+                        _gm = inv_dyn.get("gm_latest")
+                        _gmm = inv_dyn.get("gm_momentum")
+                        iv2.metric("最新毛利率",
+                                   f"{_gm:.1f}%" if _gm is not None else "—",
+                                   delta=(f"{_gmm:+.1f}pp vs 近期" if _gmm is not None else None))
+                        _acc = inv_dyn.get("gm_acceleration")
+                        iv3.metric("毛利加速度",
+                                   f"{_acc:+.1f}pp" if _acc is not None else "—",
+                                   help="毛利率季增幅的變化。正=擴張在加速（報價/庫存重估效應）")
+                        _radj = eps_result.get("revaluation_adjustment")
+                        iv4.metric("庫存重估修正",
+                                   f"{(_radj or 0)*100:+.1f}%" if _radj is not None else "—",
+                                   help="此信號對 Forward EPS 的調整幅度（上限 ±20%）")
+                        st.markdown(
+                            f'<div style="display:inline-block;padding:4px 12px;border-radius:20px;'
+                            f'background:#161b22;border:1px solid {_rs_color}">'
+                            f'庫存重估信號：<b style="color:{_rs_color}">{inv_dyn.get("signal_label","中性")}</b>'
+                            f'（{_rs:+.2f}）</div>',
+                            unsafe_allow_html=True,
+                        )
+                        for _rsn in inv_dyn.get("reasons", []):
+                            st.markdown(f"- {_rsn}")
+
+                    # ── 產品報價情境 ──────────────────────────────────────
+                    _ps = eps_result.get("price_scenario")
+                    if _ps and _ps.get("note"):
+                        st.markdown("---")
+                        st.markdown("#### 🎚️ 產品報價情境（你的看法）")
+                        _sc_eps = _ps.get("scenario_eps", 0)
+                        _sc_delta = _ps.get("eps_delta_pct", 0)
+                        ps1, ps2 = st.columns([1, 2])
+                        ps1.metric("情境 Forward EPS", f"{_sc_eps:.2f} 元",
+                                   delta=f"{_sc_delta:+.0f}% vs 基準")
+                        ps2.info(_ps["note"])
+                        st.caption("⚠️ 報價情境為你輸入的假設推算，非模型自動預測，請自行評估。")
         elif not eps_btn:
             st.info("👈 輸入股票代號並按「計算 Forward EPS」開始分析")
             st.markdown("""
@@ -1468,8 +1548,14 @@ with tab6:
 1. **TTM EPS** = 最近四季 EPS 加總
 2. **成長率** = 近 6 個月月營收 YoY 平均
 3. **毛利趨勢修正** = 毛利率偏離均值的比例（±5% 上限）
-4. **Forward EPS** = TTM EPS × (1 + 調整後成長率)
-5. **目標價** = Forward EPS × 歷史 P/E 分位數
+4. **庫存重估修正**（新）= 針對記憶體模組/面板/原物料等庫存重估型公司，
+   從**存貨週轉天數**、**存貨/營收比**與**毛利加速度**偵測「低價庫存 × 報價上漲」
+   的獲利拐點，修正 Forward EPS（±20% 上限）。以威剛為例，其單季 EPS 暴增來自
+   手中低成本 DRAM 庫存遇上報價暴漲 —— 這是資產負債表訊號，單看營收看不到。
+5. **Forward EPS** = TTM EPS × (1 + 營收成長 + 毛利趨勢 + 庫存重估)
+6. **目標價** = Forward EPS × 歷史 P/E 分位數
+7. **產品報價情境**（選填）= 輸入你對主力產品報價的看法（如 DRAM +30%），
+   對庫存重估型公司加算報價傳導後的情境 EPS。
 """)
 
 

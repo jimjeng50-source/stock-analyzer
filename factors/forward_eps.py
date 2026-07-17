@@ -23,34 +23,29 @@ class ForwardEPSCalculator:
     1. 取近 8 季 EPS 實績，計算 TTM EPS
     2. 取近 6 個月月營收 YoY 平均作為成長率代理
     3. 計算毛利率趨勢調整係數（連續擴張 → 上修，收縮 → 下修）
-    4. Forward EPS = TTM EPS × (1 + 調整後成長率)
+    3.5 存貨動態與庫存重估信號：對記憶體模組/面板/原物料等庫存重估型
+        公司，偵測「低價庫存 × 報價上漲」的獲利拐點（存貨部位 + 毛利
+        加速度），修正 Forward EPS —— 這是單純營收趨勢看不到的爆發來源
+    4. Forward EPS = TTM EPS × (1 + 營收成長 + 毛利趨勢 + 庫存重估)
     5. 用歷史 P/E 分位數計算三情境目標價
-    6. 計算 PEG Ratio
+    6. 計算 PEG Ratio；選填產品報價情境調整
     """
 
     def __init__(self, fetcher: DataFetcher):
         self.fetcher = fetcher
 
-    def calculate(self, stock_id: str) -> dict:
+    def calculate(self, stock_id: str, product_price_chg_pct: float = None) -> dict:
         """
         計算完整 Forward EPS 數據包。
 
+        Args:
+            product_price_chg_pct: 主力產品報價變動看法（%），選填。
+                提供時對庫存重估型公司加做報價情境調整。
+
         Returns:
-            {
-                "stock_id": str,
-                "ttm_eps": float,
-                "eps_growth_rate": float,
-                "forward_eps_1y": float,
-                "gm_adjustment": float,
-                "target_price": {"bull": float, "base": float, "bear": float},
-                "current_price": float,
-                "upside_pct": float,
-                "peg_ratio": Optional[float],
-                "pe_band": {"p25": float, "median": float, "p75": float, "current": float},
-                "confidence": str,
-                "confidence_reason": str,
-                "error": Optional[str],
-            }
+            dict — 含 ttm_eps、forward_eps_1y、target_price、
+            inventory_dynamics（存貨動態與庫存重估信號）、
+            price_scenario（報價情境，若提供）等欄位。
         """
         result = {
             "stock_id": stock_id,
@@ -58,6 +53,9 @@ class ForwardEPSCalculator:
             "eps_growth_rate": None,
             "forward_eps_1y": None,
             "gm_adjustment": None,
+            "revaluation_adjustment": None,
+            "inventory_dynamics": None,
+            "price_scenario": None,
             "target_price": {"bull": None, "base": None, "bear": None},
             "current_price": None,
             "upside_pct": None,
@@ -109,11 +107,38 @@ class ForwardEPSCalculator:
 
             result["gm_adjustment"] = round(gm_adjustment, 4)
 
-            # Step 4: Forward EPS
-            adjusted_growth = growth_proxy + gm_adjustment
+            # Step 3.5: 存貨動態與庫存重估信號（威剛型：低價庫存 × 報價上漲）
+            reval_adjustment = 0.0
+            try:
+                from factors.inventory_dynamics import (
+                    compute_inventory_dynamics, MAX_REVALUATION_IMPACT,
+                    apply_product_price_scenario,
+                )
+                inv_dyn = compute_inventory_dynamics(self.fetcher, stock_id)
+                result["inventory_dynamics"] = inv_dyn
+                if not inv_dyn.get("error"):
+                    reval_adjustment = inv_dyn["revaluation_score"] * MAX_REVALUATION_IMPACT
+                    result["revaluation_adjustment"] = round(reval_adjustment, 4)
+            except Exception as e:
+                inv_dyn = None
+
+            # Step 4: Forward EPS（營收成長 + 毛利趨勢 + 庫存重估）
+            adjusted_growth = growth_proxy + gm_adjustment + reval_adjustment
             forward_eps = ttm_eps * (1 + adjusted_growth)
             result["eps_growth_rate"] = round(adjusted_growth, 4)
             result["forward_eps_1y"] = round(forward_eps, 2)
+
+            # Step 4.5: 產品報價情境（選填，使用者有報價看法時）
+            if product_price_chg_pct and inv_dyn and not inv_dyn.get("error"):
+                try:
+                    result["price_scenario"] = apply_product_price_scenario(
+                        forward_eps, ttm_eps,
+                        inv_dyn.get("inv_to_rev_latest"),
+                        inv_dyn.get("gm_latest"),
+                        product_price_chg_pct,
+                    )
+                except Exception:
+                    pass
 
             # Step 5: 歷史 P/E 分位數（取近 3 年日頻資料）
             pe_data = self.fetcher.get_historical_pe(stock_id, years=3)
