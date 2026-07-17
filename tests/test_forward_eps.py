@@ -289,3 +289,61 @@ class TestForwardEPSTypeValidation:
 
         assert result["error"] is not None
         assert result["confidence"] == "low"
+
+
+# ── 多算法輸出測試 ─────────────────────────────────────────────────────────────
+
+class TestMultipleMethods:
+    def _wire(self, mock_fetcher, eps, rev, gm, pe):
+        mock_fetcher.get_quarterly_eps.return_value = eps
+        mock_fetcher.get_monthly_revenue.return_value = rev
+        mock_fetcher.get_quarterly_gross_margin.return_value = gm
+        mock_fetcher.get_historical_pe.return_value = pe
+        mock_fetcher.get_market_price.return_value = 700.0
+        mock_fetcher._fm_request.return_value = pd.DataFrame()  # 無存貨資料
+
+    def test_methods_dict_has_all_five(self, mock_fetcher, eps_df_8q, revenue_df_6m, gm_df_6q, pe_df_3y):
+        self._wire(mock_fetcher, eps_df_8q, revenue_df_6m, gm_df_6q, pe_df_3y)
+        result = ForwardEPSCalculator(mock_fetcher).calculate("2330")
+        methods = result["methods"]
+        for k in ["quant_base", "quant_inventory", "scenario", "consensus", "guidance"]:
+            assert k in methods
+        # base 與 scenario 有資料
+        assert methods["quant_base"]["available"] is True
+        assert "bull" in methods["scenario"] and "bear" in methods["scenario"]
+
+    def test_base_and_inventory_eps_separately_exposed(self, mock_fetcher, eps_df_8q, revenue_df_6m, gm_df_6q, pe_df_3y):
+        self._wire(mock_fetcher, eps_df_8q, revenue_df_6m, gm_df_6q, pe_df_3y)
+        result = ForwardEPSCalculator(mock_fetcher).calculate("2330")
+        # 無存貨資料 → 庫存重估=0 → base 應等於 inventory
+        assert result["base_eps_1y"] == pytest.approx(result["forward_eps_1y"], rel=1e-6)
+        assert result["methods"]["quant_base"]["eps"] == result["base_eps_1y"]
+
+    def test_manual_consensus_and_guidance_flow_in(self, mock_fetcher, eps_df_8q, revenue_df_6m, gm_df_6q, pe_df_3y):
+        self._wire(mock_fetcher, eps_df_8q, revenue_df_6m, gm_df_6q, pe_df_3y)
+        result = ForwardEPSCalculator(mock_fetcher).calculate(
+            "2330", consensus_eps=28.5, guidance_eps=26.0)
+        assert result["methods"]["consensus"]["available"] is True
+        assert result["methods"]["consensus"]["eps"] == 28.5
+        assert result["methods"]["guidance"]["available"] is True
+        assert result["methods"]["guidance"]["eps"] == 26.0
+
+    def test_consensus_guidance_unavailable_by_default(self, mock_fetcher, eps_df_8q, revenue_df_6m, gm_df_6q, pe_df_3y):
+        self._wire(mock_fetcher, eps_df_8q, revenue_df_6m, gm_df_6q, pe_df_3y)
+        result = ForwardEPSCalculator(mock_fetcher).calculate("2330")
+        assert result["methods"]["consensus"]["available"] is False
+        assert result["methods"]["consensus"]["eps"] is None
+        assert result["methods"]["guidance"]["available"] is False
+
+    def test_quant_unavailable_when_data_insufficient(self, mock_fetcher, eps_df_8q):
+        """營收與毛利都缺 → 定量方法標記為不可用（不是誤導的 0%）。"""
+        mock_fetcher.get_quarterly_eps.return_value = eps_df_8q
+        mock_fetcher.get_monthly_revenue.return_value = pd.DataFrame()      # 無營收
+        mock_fetcher.get_quarterly_gross_margin.return_value = pd.DataFrame()  # 無毛利
+        mock_fetcher.get_historical_pe.return_value = pd.DataFrame()
+        mock_fetcher.get_market_price.return_value = 700.0
+        mock_fetcher._fm_request.return_value = pd.DataFrame()
+        result = ForwardEPSCalculator(mock_fetcher).calculate("3260")
+        assert result["methods"]["quant_base"]["available"] is False
+        # forward 仍接近 TTM
+        assert result["forward_eps_1y"] == pytest.approx(result["ttm_eps"], rel=1e-6)

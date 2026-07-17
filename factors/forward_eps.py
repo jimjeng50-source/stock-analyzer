@@ -34,28 +34,31 @@ class ForwardEPSCalculator:
     def __init__(self, fetcher: DataFetcher):
         self.fetcher = fetcher
 
-    def calculate(self, stock_id: str, product_price_chg_pct: float = None) -> dict:
+    def calculate(self, stock_id: str, product_price_chg_pct: float = None,
+                  consensus_eps: float = None, guidance_eps: float = None) -> dict:
         """
-        計算完整 Forward EPS 數據包。
+        計算完整 Forward EPS 數據包（多算法）。
 
         Args:
             product_price_chg_pct: 主力產品報價變動看法（%），選填。
-                提供時對庫存重估型公司加做報價情境調整。
+            consensus_eps: 市場共識 EPS（手動輸入外資/投顧預估），選填。
+            guidance_eps: 公司財測 EPS（手動輸入法說會指引），選填。
 
         Returns:
             dict — 含 ttm_eps、forward_eps_1y、target_price、
-            inventory_dynamics（存貨動態與庫存重估信號）、
-            price_scenario（報價情境，若提供）等欄位。
+            inventory_dynamics、price_scenario，以及 methods（多種算法比較）。
         """
         result = {
             "stock_id": stock_id,
             "ttm_eps": None,
             "eps_growth_rate": None,
             "forward_eps_1y": None,
+            "base_eps_1y": None,
             "gm_adjustment": None,
             "revaluation_adjustment": None,
             "inventory_dynamics": None,
             "price_scenario": None,
+            "methods": {},
             "target_price": {"bull": None, "base": None, "bear": None},
             "current_price": None,
             "upside_pct": None,
@@ -109,6 +112,7 @@ class ForwardEPSCalculator:
 
             # Step 3.5: 存貨動態與庫存重估信號（威剛型：低價庫存 × 報價上漲）
             reval_adjustment = 0.0
+            inv_dyn = None
             try:
                 from factors.inventory_dynamics import (
                     compute_inventory_dynamics, MAX_REVALUATION_IMPACT,
@@ -122,11 +126,79 @@ class ForwardEPSCalculator:
             except Exception as e:
                 inv_dyn = None
 
-            # Step 4: Forward EPS（營收成長 + 毛利趨勢 + 庫存重估）
-            adjusted_growth = growth_proxy + gm_adjustment + reval_adjustment
-            forward_eps = ttm_eps * (1 + adjusted_growth)
+            # Step 4: 多算法 Forward EPS
+            # (a) 定量模型-基礎：營收成長 + 毛利趨勢（原本的算法）
+            base_growth = growth_proxy + gm_adjustment
+            base_eps = ttm_eps * (1 + base_growth)
+            # (b) 定量模型-含庫存重估：再加庫存重估修正（威剛型）
+            inv_growth = base_growth + reval_adjustment
+            inventory_eps = ttm_eps * (1 + inv_growth)
+
+            # 主要輸出：以含庫存重估者為準（供評分/目標價使用）
+            adjusted_growth = inv_growth
+            forward_eps = inventory_eps
             result["eps_growth_rate"] = round(adjusted_growth, 4)
             result["forward_eps_1y"] = round(forward_eps, 2)
+            result["base_eps_1y"] = round(base_eps, 2)
+
+            # 資料是否足以支撐定量推估（營收或毛利至少一項有效）
+            _rev_missing = ("rev_insufficient" in confidence_flags
+                            or "rev_yoy_insufficient" in confidence_flags)
+            _gm_missing = "gm_insufficient" in confidence_flags
+            _quant_ok = not (_rev_missing and _gm_missing)
+
+            # (c) 情境敏感度：以毛利率波動度張開樂觀/中性/悲觀
+            gm_vol = 0.05
+            if gm_data is not None and len(gm_data) >= 3:
+                _gm_arr = gm_data["gross_margin"].values.astype(float)
+                _mean = float(_gm_arr.mean())
+                if _mean != 0:
+                    gm_vol = float(min(0.15, max(0.03, _gm_arr.std() / abs(_mean))))
+            scenario = {
+                "bull": round(ttm_eps * (1 + base_growth + gm_vol), 2),
+                "base": round(base_eps, 2),
+                "bear": round(ttm_eps * (1 + base_growth - gm_vol), 2),
+            }
+
+            # 組多算法比較表
+            result["methods"] = {
+                "quant_base": {
+                    "label": "定量模型-基礎", "eps": round(base_eps, 2),
+                    "growth_pct": round(base_growth * 100, 1),
+                    "available": _quant_ok,
+                    "source": "營收成長率 + 毛利趨勢（TTM 外推）",
+                    "note": "" if _quant_ok else "營收/毛利資料不足，僅等於 TTM",
+                },
+                "quant_inventory": {
+                    "label": "定量模型-含庫存重估", "eps": round(inventory_eps, 2),
+                    "growth_pct": round(inv_growth * 100, 1),
+                    "available": _quant_ok and inv_dyn is not None and not inv_dyn.get("error"),
+                    "source": "基礎 + 存貨/毛利加速度庫存重估信號",
+                    "note": (inv_dyn.get("signal_label", "") if (inv_dyn and not inv_dyn.get("error"))
+                             else "存貨資料不足，等同基礎模型"),
+                },
+                "scenario": {
+                    "label": "情境敏感度（樂觀/中性/悲觀）", "eps": scenario["base"],
+                    "bull": scenario["bull"], "base": scenario["base"], "bear": scenario["bear"],
+                    "available": _quant_ok,
+                    "source": "以毛利率波動度張開三情境",
+                    "note": "",
+                },
+                "consensus": {
+                    "label": "市場共識（外資/投顧平均）",
+                    "eps": round(float(consensus_eps), 2) if consensus_eps else None,
+                    "available": bool(consensus_eps),
+                    "source": "IBES/Bloomberg 分析師預估平均",
+                    "note": "無免費資料源，如有券商報告數字可手動輸入" if not consensus_eps else "手動輸入",
+                },
+                "guidance": {
+                    "label": "公司財測指引",
+                    "eps": round(float(guidance_eps), 2) if guidance_eps else None,
+                    "available": bool(guidance_eps),
+                    "source": "公司法說會官方財務預測",
+                    "note": "台股多數不提供正式 EPS 財測，如有可手動輸入" if not guidance_eps else "手動輸入",
+                },
+            }
 
             # Step 4.5: 產品報價情境（選填，使用者有報價看法時）
             if product_price_chg_pct and inv_dyn and not inv_dyn.get("error"):
