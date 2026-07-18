@@ -274,6 +274,25 @@ def job_morning_report() -> int:
     else:
         lines.append("　目前資料庫尚無推薦紀錄。可執行 backfill-history 回補歷史。")
 
+    # 社群/熱門候選池（籌碼買超、社群熱議、研報點名、量能）
+    try:
+        from screener.universe import UniverseManager
+        from screener.hot_stocks import HotStockDetector
+        uni = UniverseManager().get_universe()
+        hot = HotStockDetector().detect_all(uni if uni is not None else None)
+        if hot:
+            name_map = {}
+            if uni is not None and not uni.empty and "stock_name" in uni.columns:
+                name_map = dict(zip(uni["stock_id"].astype(str), uni["stock_name"]))
+            lines += ["", "🔥 熱門候選池（社群/籌碼/研報）"]
+            # 依標記數排序（越多來源命中越前面），取前 8
+            ranked = sorted(hot.items(), key=lambda kv: len(kv[1]), reverse=True)[:8]
+            for sid, tags in ranked:
+                nm = name_map.get(str(sid), sid)
+                lines.append(f"・{sid} {nm}｜{'、'.join(tags)}")
+    except Exception as e:
+        logger.warning("熱門候選池區塊產生失敗（略過）：%s", e)
+
     lines += ["", "⚠️ 僅供研究參考，不構成投資建議。投資有風險，請自行評估。"]
 
     ok = Notifier().send_telegram("\n".join(lines))
