@@ -2015,6 +2015,47 @@ with tab9:
 
     st.markdown("---")
 
+    # ── 每日 Job 產出的正確率報告（reports/ 檔案，隨 GitHub Actions 更新）──────
+    st.markdown("### 📄 每日產出報告")
+    st.caption(
+        "由 GitHub Actions 每次跑完自動產生並 commit 回 repo，"
+        "Streamlit 重新部署時同步。這裡直接顯示最新一份。"
+    )
+    import os as _os
+    _summary_path = "reports/accuracy_summary.md"
+    _csv_path = "reports/accuracy_report.csv"
+    if _os.path.exists(_summary_path):
+        try:
+            with open(_summary_path, "r", encoding="utf-8") as _f:
+                _summary_txt = _f.read().strip()
+            # 空報告（僅樣板、無資料）給明確提示
+            if "總推薦數：0" in _summary_txt or not _summary_txt:
+                st.info(
+                    "📭 目前報告內容為空 —— 尚無達標推薦被記錄。"
+                    "可到 GitHub → Actions → Daily Jobs → Run workflow → 選 "
+                    "`backfill-history` 回補歷史資料，報告就會有內容。"
+                )
+            st.markdown(_summary_txt)
+        except Exception as _e:
+            st.warning(f"讀取報告摘要失敗：{_e}")
+    else:
+        st.info("尚未產生報告檔（daily job 跑過一次後會出現）。")
+
+    if _os.path.exists(_csv_path):
+        try:
+            _rpt_df = pd.read_csv(_csv_path)
+            if not _rpt_df.empty and "（尚無推薦紀錄）" not in str(_rpt_df.columns):
+                with st.expander(f"📋 報告明細（{len(_rpt_df)} 筆）"):
+                    st.dataframe(_rpt_df, use_container_width=True, hide_index=True)
+                with open(_csv_path, "rb") as _cf:
+                    st.download_button("📥 下載報告 CSV", data=_cf.read(),
+                                       file_name="accuracy_report.csv", mime="text/csv",
+                                       key="dl_committed_report")
+        except Exception:
+            pass
+
+    st.markdown("---")
+
     # ── 績效追蹤（穩健長線導向：以 20/60 日為主指標）─────────────────────────
     st.markdown("### 📊 歷史推薦績效追蹤")
     perf = _rec_db.get_performance_summary(n_days=180)
