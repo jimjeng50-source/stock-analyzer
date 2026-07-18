@@ -2263,6 +2263,61 @@ with tab10:
                     except Exception as _e:
                         st.error(f"❌ TWSE/TPEX 快照異常：{_e}")
 
+    # ── Telegram Chat ID 取得 / 測試推播 ──────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📨 Telegram 設定")
+    st.caption(
+        "互動機器人指令（/myid 等）需要常駐程式才會回應，此部署沒有跑，所以「機器人沒反應」是正常的。"
+        "推播不需要機器人，只要 Bot Token + Chat ID。下面用你的 Token 直接抓 Chat ID。"
+    )
+    st.markdown(
+        "**先做一次**：在 Telegram 搜尋你的 Bot → 按 **Start** 或隨便傳一句話（例如 hi），"
+        "否則 Telegram 不允許 Bot 主動傳訊給你，也抓不到 Chat ID。"
+    )
+    _tg1, _tg2 = st.columns(2)
+    with _tg1:
+        if st.button("🔎 取得我的 Chat ID"):
+            import requests as _rq
+            _tok = get_runtime_config("TELEGRAM_BOT_TOKEN")
+            if not _tok:
+                st.error("TELEGRAM_BOT_TOKEN 未設定，請先在上方輸入並儲存。")
+            else:
+                try:
+                    _r = _rq.get(f"https://api.telegram.org/bot{_tok}/getUpdates", timeout=15)
+                    _d = _r.json()
+                    if not _d.get("ok"):
+                        st.error(f"Telegram 回應錯誤：{_d.get('description', _d)}（Token 可能錯誤）")
+                    else:
+                        _chats = {}
+                        for _u in _d.get("result", []):
+                            _msg = _u.get("message") or _u.get("edited_message") or {}
+                            _chat = _msg.get("chat") or {}
+                            if _chat.get("id"):
+                                _name = _chat.get("title") or _chat.get("first_name") or _chat.get("username") or ""
+                                _chats[str(_chat["id"])] = _name
+                        if _chats:
+                            st.success("✅ 找到以下 Chat ID（把數字填入上方 TELEGRAM_CHAT_ID 並儲存）：")
+                            for _cid, _nm in _chats.items():
+                                st.code(_cid + (f"   （{_nm}）" if _nm else ""))
+                        else:
+                            st.warning(
+                                "抓不到訊息記錄。請先在 Telegram 對你的 Bot 傳一句話，再按一次此按鈕。"
+                                "（Telegram 只保留最近的更新，太久以前的訊息會過期）"
+                            )
+                except Exception as _e:
+                    st.error(f"請求失敗：{_e}")
+    with _tg2:
+        if st.button("📤 發送測試訊息"):
+            try:
+                from alerts.notifier import Notifier
+                _ok = Notifier().send_telegram("✅ 測試訊息：你的 Telegram 推播設定成功！")
+                if _ok:
+                    st.success("已送出，請到 Telegram 查看。沒收到的話檢查 Chat ID 是否正確。")
+                else:
+                    st.error("送出失敗 — TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID 未設定/有誤。")
+            except Exception as _e:
+                st.error(f"發送異常：{_e}")
+
     st.markdown("---")
     st.markdown("### 編輯金鑰")
 
