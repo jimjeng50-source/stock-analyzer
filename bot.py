@@ -518,11 +518,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── 啟動 ──────────────────────────────────────────────────────────────────────
 
 def main():
-    if not TELEGRAM_BOT_TOKEN:
-        print("❌ 請在 .env 設定 TELEGRAM_BOT_TOKEN")
+    from config import get_runtime_config
+    token = get_runtime_config("TELEGRAM_BOT_TOKEN")
+    if not token:
+        print("❌ 請設定 TELEGRAM_BOT_TOKEN（環境變數 / .env / Secrets）")
         return
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("analyze", cmd_analyze))

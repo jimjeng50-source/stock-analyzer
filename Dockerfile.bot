@@ -1,0 +1,28 @@
+# Telegram 互動機器人 24/7 常駐容器
+# 用途：讓 bot.py 持續上線，隨時對話（/analyze、/eps、/recommend、傳代號分析）
+#
+# 建置：docker build -f Dockerfile.bot -t stock-bot .
+# 執行：docker run -d --restart=always \
+#         -e TELEGRAM_BOT_TOKEN=xxx -e FINMIND_TOKEN=xxx \
+#         -e ANTHROPIC_API_KEY=xxx --name stock-bot stock-bot
+#
+# 也可直接部署到 Railway / Fly.io / Render（指定此 Dockerfile 即可）。
+
+FROM python:3.11-slim
+
+# ta 套件與部分相依需要編譯工具
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+# ta 若編譯失敗不致命（程式會退化為中性技術面分數），故容錯安裝
+RUN pip install --no-cache-dir -r requirements.txt || \
+    pip install --no-cache-dir $(grep -v '^ta' requirements.txt | grep -v '^#')
+
+COPY . .
+
+# 常駐輪詢；容器管理器負責重啟
+CMD ["python", "bot.py"]
