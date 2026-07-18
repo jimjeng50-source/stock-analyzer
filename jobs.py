@@ -209,8 +209,80 @@ def job_report_export() -> int:
     return 0
 
 
+def job_morning_report() -> int:
+    """
+    晨間報告（早上 8:00）→ Telegram：
+    - 推薦模型正確率（含歷史回補樣本：20/60 日報酬、勝率）
+    - 最新一日推薦（或觀察名單）及其 Forward EPS / 目標價
+    """
+    from datetime import date
+    from screener.recommendation_db import RecommendationDB
+    from screener.historical_eval import evaluate_60d_accuracy
+    from alerts.notifier import Notifier
+
+    db = RecommendationDB()
+    perf = db.get_performance_summary(n_days=180)
+    acc = evaluate_60d_accuracy(db, top_k=3)
+
+    def _p(v, s=""):
+        return f"{v:+.1f}{s}" if isinstance(v, (int, float)) else "—"
+
+    def _w(v):
+        return f"{v*100:.0f}%" if isinstance(v, (int, float)) else "—"
+
+    lines = [
+        "╔══════════════════════╗",
+        "║  ☀️ 台股晨間報告      ║",
+        f"║  {date.today().isoformat()}        ║",
+        "╚══════════════════════╝",
+        "",
+        "📊 推薦模型績效（近半年）",
+        f"　20 日：{_p(perf.get('avg_return_20d'), '%')}（勝率 {_w(perf.get('win_rate_20d'))}）",
+        f"　60 日：{_p(perf.get('avg_return_60d'), '%')}（勝率 {_w(perf.get('win_rate_60d'))}）",
+        f"　已評估 {perf.get('evaluated_count', 0)} 筆",
+    ]
+    if acc.get("overall"):
+        o = acc["overall"]
+        lines.append(f"　前 3 名 60 日正確率：{_w(o.get('win_rate'))}"
+                     f"（平均 {_p(o.get('avg_return_pct'), '%')}）")
+
+    # 最新一日推薦（帶 Forward EPS / 目標價）
+    recent = db.get_recent_recommendations(n_days=7)
+    lines += ["", "🏆 最新推薦"]
+    if recent is not None and not recent.empty:
+        latest_date = recent["recommend_date"].max()
+        today_recs = recent[recent["recommend_date"] == latest_date].sort_values("rank")
+        medal = {1: "🥇", 2: "🥈", 3: "🥉"}
+        lines.append(f"（{latest_date}）")
+        for _, r in today_recs.head(5).iterrows():
+            icon = medal.get(int(r.get("rank", 0)), f"#{int(r.get('rank', 0))}")
+            sid = r.get("stock_id", "")
+            name = r.get("stock_name", sid)
+            score = r.get("total_score") or 0
+            price = r.get("current_price") or 0
+            lines.append(f"{icon} {sid} {name}　評分 {score:.0f}｜{price:.0f} 元")
+            feps = r.get("forward_eps")
+            g = r.get("eps_growth_pct")
+            tp = r.get("target_price")
+            up = r.get("upside_pct")
+            if feps is not None and str(feps) != "nan":
+                gs = f"（成長 {g:+.0f}%）" if g is not None and str(g) != "nan" else ""
+                lines.append(f"　📈 Forward EPS：{feps:.2f} 元{gs}")
+            if tp is not None and str(tp) != "nan":
+                us = f"（{up:+.0f}%）" if up is not None and str(up) != "nan" else ""
+                lines.append(f"　🎯 目標價：{tp:.0f} 元{us}")
+    else:
+        lines.append("　目前資料庫尚無推薦紀錄。可執行 backfill-history 回補歷史。")
+
+    lines += ["", "⚠️ 僅供研究參考，不構成投資建議。投資有風險，請自行評估。"]
+
+    ok = Notifier().send_telegram("\n".join(lines))
+    logger.info("晨間報告已推播" if ok else "晨間報告推播失敗（檢查 Telegram 設定）")
+    return 0
+
+
 JOBS = {"scan": job_scan, "risk": job_risk, "backfill": job_backfill,
-        "report-export": job_report_export}
+        "report-export": job_report_export, "morning-report": job_morning_report}
 
 
 def main():

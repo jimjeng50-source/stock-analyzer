@@ -11,6 +11,7 @@ name: Daily Jobs
 
 on:
   schedule:
+    - cron: "0 0 * * 1-5"    # 平日 08:00 台灣時間 → 晨間報告（績效 + 最新推薦 Forward EPS）
     - cron: "0 9 * * 1-5"    # 平日 17:00 台灣時間 → 盤後掃描 + 風險警訊
     - cron: "0 1 * * 1"      # 週一 09:00 台灣時間 → 績效回填
   workflow_dispatch:          # 手動觸發（Actions 頁面按 Run workflow）
@@ -18,7 +19,7 @@ on:
       job:
         description: "要執行的任務"
         type: choice
-        options: [scan, risk, backfill, backfill-history, report-export, all]
+        options: [scan, risk, backfill, backfill-history, report-export, morning-report, all]
         default: all
       start_date:
         description: "backfill-history 起始日（YYYY-MM-DD）"
@@ -57,6 +58,11 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      # ── 平日 08:00：晨間報告（績效 + 最新推薦 Forward EPS）→ Telegram ──
+      - name: Morning report
+        if: github.event.schedule == '0 0 * * 1-5' || inputs.job == 'morning-report'
+        run: python jobs.py morning-report
 
       # ── 平日 17:00：掃描 + 風險警訊 ──────────────────────────────
       - name: Daily scan
