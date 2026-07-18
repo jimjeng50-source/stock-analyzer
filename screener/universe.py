@@ -70,6 +70,15 @@ class UniverseManager:
         logger.info("重新取得全市場股票清單...")
         df = self._fetch_stock_info()
         if df.empty:
+            # FinMind 清單失敗（如 402 配額）→ 改用免費 TWSE/TPEX 快照直接建候選池
+            logger.warning("FinMind 股票清單失敗，改用 TWSE/TPEX 官方快照建立候選池...")
+            fallback = self._universe_from_snapshot()
+            if fallback is not None and not fallback.empty:
+                fallback = fallback.sort_values("market_cap_b", ascending=False).head(SCREENER_UNIVERSE_SIZE)
+                fallback = fallback.reset_index(drop=True)
+                self._save_cache(fallback)
+                logger.info("股票池已更新（TWSE/TPEX 來源）：%d 支", len(fallback))
+                return fallback
             logger.warning("無法取得股票清單，回傳空 DataFrame")
             return df
 
@@ -316,6 +325,35 @@ class UniverseManager:
 
         return None
 
+    def _universe_from_snapshot(self) -> Optional[pd.DataFrame]:
+        """
+        FinMind 股票清單不可用時的免費備援：直接用 TWSE/TPEX 快照建候選池。
+        （含 stock_id / stock_name / last_price / avg_volume_k / market_cap_b[成交值代理]）
+        """
+        import numpy as np
+        snap = self._fetch_twse_tpex_snapshot()
+        if snap is None or snap.empty:
+            return None
+        df = snap.copy()
+        if "stock_name" not in df.columns:
+            df["stock_name"] = df["stock_id"]
+        df["stock_name"] = df["stock_name"].fillna(df["stock_id"]).replace("", np.nan).fillna(df["stock_id"])
+        # 僅保留 4-6 碼一般股票代號
+        df = df[df["stock_id"].astype(str).str.match(r"^\d{4,6}$")]
+        df["last_price"] = pd.to_numeric(df["close"], errors="coerce")
+        df["avg_volume_k"] = pd.to_numeric(df.get("Trading_Volume"), errors="coerce") / 1000
+        df["turnover_b"] = pd.to_numeric(df.get("Trading_money"), errors="coerce") / 1e8
+        df["market_cap_b"] = df["turnover_b"]     # 成交值（億）作規模/流動性代理
+        df["market"] = "TWSE/TPEX"
+        df["industry"] = ""
+        df = df.dropna(subset=["last_price"])
+        df = df[df["last_price"] > 0]
+        # 基本流動性過濾
+        df = df[df["avg_volume_k"].fillna(0) >= FILTER_MIN_AVG_VOLUME_K]
+        cols = ["stock_id", "stock_name", "market", "industry",
+                "market_cap_b", "avg_volume_k", "last_price"]
+        return df[cols].drop_duplicates("stock_id").reset_index(drop=True)
+
     def _fetch_twse_tpex_snapshot(self) -> Optional[pd.DataFrame]:
         """
         從 TWSE / TPEX 官方 OpenAPI 取得最近交易日全市場收盤快照。
@@ -334,6 +372,7 @@ class UniverseManager:
             if not df.empty and "Code" in df.columns:
                 frames.append(pd.DataFrame({
                     "stock_id": df["Code"],
+                    "stock_name": df.get("Name", ""),
                     "close": df.get("ClosingPrice"),
                     "Trading_Volume": df.get("TradeVolume"),
                     "Trading_money": df.get("TradeValue"),
@@ -351,12 +390,14 @@ class UniverseManager:
             resp.raise_for_status()
             df = pd.DataFrame(resp.json())
             code_col = next((c for c in ("SecuritiesCompanyCode", "Code", "stock_id") if c in df.columns), None)
+            name_col = next((c for c in ("CompanyName", "Name", "stock_name") if c in df.columns), None)
             close_col = next((c for c in ("Close", "ClosingPrice", "close") if c in df.columns), None)
             vol_col = next((c for c in ("TradingShares", "TradeVolume", "Trading_Volume") if c in df.columns), None)
             amt_col = next((c for c in ("TransactionAmount", "TradeValue", "Trading_money") if c in df.columns), None)
             if not df.empty and code_col and close_col:
                 frames.append(pd.DataFrame({
                     "stock_id": df[code_col],
+                    "stock_name": df[name_col] if name_col else "",
                     "close": df[close_col],
                     "Trading_Volume": df[vol_col] if vol_col else 0,
                     "Trading_money": df[amt_col] if amt_col else 0,

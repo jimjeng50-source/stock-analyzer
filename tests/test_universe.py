@@ -151,3 +151,30 @@ class TestUniverseManager:
         with patch("screener.universe.requests.get", side_effect=Exception("network down")):
             snap = mgr._fetch_twse_tpex_snapshot()
         assert snap is None
+
+    # ── FinMind 清單失敗時，用 TWSE/TPEX 快照建候選池 ──────────────────────────
+
+    def test_universe_from_snapshot_fallback(self):
+        """_fetch_stock_info 回空（FinMind 402）→ get_universe 改用快照建池。"""
+        mgr = UniverseManager()
+        snap = pd.DataFrame({
+            "stock_id": ["2330", "2317", "9999"],
+            "stock_name": ["台積電", "鴻海", ""],
+            "close": [900.0, 200.0, 50.0],
+            "Trading_Volume": [30_000_000, 20_000_000, 10_000_000],
+            "Trading_money": [2.7e10, 4e9, 5e8],
+        })
+        with patch.object(mgr, "_fetch_stock_info", return_value=pd.DataFrame()), \
+             patch.object(mgr, "_fetch_twse_tpex_snapshot", return_value=snap), \
+             patch.object(mgr, "_load_cache", return_value=None), \
+             patch.object(mgr, "_save_cache"):
+            uni = mgr.get_universe()
+        assert not uni.empty
+        assert set(["stock_id", "stock_name", "last_price", "market_cap_b"]).issubset(uni.columns)
+        row = uni[uni["stock_id"] == "2330"].iloc[0]
+        assert row["stock_name"] == "台積電"
+        assert row["last_price"] == 900.0
+        # 無股名者以代號代替
+        blank = uni[uni["stock_id"] == "9999"]
+        if not blank.empty:
+            assert blank.iloc[0]["stock_name"] == "9999"
