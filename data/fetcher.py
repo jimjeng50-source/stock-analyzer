@@ -18,6 +18,25 @@ from utils.tz import now_tw
 
 _FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 
+# FinMind 免費配額用盡（402 Payment Required / 403 Forbidden）時，
+# 本次執行內只警告一次並停止後續請求，避免洗版與浪費時間。
+_FINMIND_QUOTA_BLOCKED = False
+
+
+def _flag_finmind_quota(status_code: int) -> None:
+    global _FINMIND_QUOTA_BLOCKED
+    if not _FINMIND_QUOTA_BLOCKED:
+        _FINMIND_QUOTA_BLOCKED = True
+        print(
+            f"[警告] FinMind 配額已用盡（HTTP {status_code}）— 免費方案每小時請求數有限，"
+            "本次掃描後續的財報/籌碼資料將略過（改用價格等免費來源）。"
+            "解法：縮小 SCREENER_UNIVERSE_SIZE，或升級 FinMind 付費方案。"
+        )
+
+
+def _finmind_quota_blocked() -> bool:
+    return _FINMIND_QUOTA_BLOCKED
+
 
 class FinMindFetcher:
     """從 FinMind 取得台股資料，無 Token 時以 yfinance 取得股價替代。"""
@@ -40,6 +59,9 @@ class FinMindFetcher:
 
     def _fm_get(self, dataset: str, start: str) -> pd.DataFrame:
         """向 FinMind API 發出請求並回傳 DataFrame；失敗時回傳空 DataFrame。"""
+        # 配額已用盡（402/403）→ 不再送請求，直接回空表（避免洗版與浪費時間）
+        if _finmind_quota_blocked():
+            return pd.DataFrame()
         try:
             resp = requests.get(
                 _FINMIND_API,
@@ -52,6 +74,9 @@ class FinMindFetcher:
                 },
                 timeout=30,
             )
+            if resp.status_code in (402, 403):
+                _flag_finmind_quota(resp.status_code)
+                return pd.DataFrame()
             resp.raise_for_status()
             body = resp.json()
             if body.get("status") == 200 and body.get("data"):
@@ -176,7 +201,7 @@ class DataFetcher:
         start: str,
         end: Optional[str] = None,
     ) -> pd.DataFrame:
-        if not get_runtime_config("FINMIND_TOKEN"):
+        if not get_runtime_config("FINMIND_TOKEN") or _finmind_quota_blocked():
             return pd.DataFrame()
         if end is None:
             end = now_tw().strftime("%Y-%m-%d")
@@ -192,6 +217,9 @@ class DataFetcher:
                 },
                 timeout=30,
             )
+            if resp.status_code in (402, 403):
+                _flag_finmind_quota(resp.status_code)
+                return pd.DataFrame()
             body = resp.json()
             if body.get("status") == 200 and body.get("data"):
                 df = pd.DataFrame(body["data"])

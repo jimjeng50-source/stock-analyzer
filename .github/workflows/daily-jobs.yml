@@ -43,6 +43,10 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
       GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+      # FinMind 免費方案每小時請求數有限；每支股票約 5 個請求，
+      # 候選池 40 支 ≈ 200 請求，避免 402/403 配額用盡。
+      # 有 FinMind 付費方案可設 repo Variable SCREENER_UNIVERSE_SIZE 調高。
+      SCREENER_UNIVERSE_SIZE: ${{ vars.SCREENER_UNIVERSE_SIZE || '40' }}
     steps:
       - uses: actions/checkout@v5
 
