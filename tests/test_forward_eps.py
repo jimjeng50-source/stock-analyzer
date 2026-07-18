@@ -347,3 +347,43 @@ class TestMultipleMethods:
         assert result["methods"]["quant_base"]["available"] is False
         # forward 仍接近 TTM
         assert result["forward_eps_1y"] == pytest.approx(result["ttm_eps"], rel=1e-6)
+
+
+# ── yfinance 基本面備援 ────────────────────────────────────────────────────────
+
+class TestYfinanceFallback:
+    def _wire_empty_finmind(self, mock_fetcher, eps_df_8q):
+        """FinMind 只有 EPS，其餘（營收/毛利/PE）全缺。"""
+        mock_fetcher.get_quarterly_eps.return_value = eps_df_8q
+        mock_fetcher.get_monthly_revenue.return_value = pd.DataFrame()   # 缺
+        mock_fetcher.get_quarterly_gross_margin.return_value = pd.DataFrame()  # 缺
+        mock_fetcher.get_historical_pe.return_value = pd.DataFrame()     # 缺
+        mock_fetcher.get_market_price.return_value = 700.0
+        mock_fetcher._fm_request.return_value = pd.DataFrame()
+
+    def test_yf_fills_growth_and_target(self, mock_fetcher, eps_df_8q):
+        self._wire_empty_finmind(mock_fetcher, eps_df_8q)
+        yf = {"trailing_eps": 23.0, "forward_eps": 28.0, "trailing_pe": 25.0,
+              "forward_pe": 22.0, "revenue_growth": 0.18, "earnings_growth": 0.20,
+              "gross_margins": 0.53}
+        with patch("data.yf_fundamentals.get_yf_fundamentals", return_value=yf):
+            result = ForwardEPSCalculator(mock_fetcher).calculate("2330")
+
+        # 營收成長改用 yfinance 的 18%
+        assert result["eps_growth_rate"] == pytest.approx(0.18, abs=1e-6)
+        # 目標價用 yfinance 本益比推得（非空）
+        assert result["target_price"]["base"] is not None
+        assert result["upside_pct"] is not None
+        # 市場共識算法自動用 yfinance forward_eps 填入
+        cons = result["methods"]["consensus"]
+        assert cons["available"] is True
+        assert cons["eps"] == 28.0
+        assert "data_sources" in result
+
+    def test_no_yf_data_stays_insufficient(self, mock_fetcher, eps_df_8q):
+        """yfinance 也無資料 → 維持原本的資料不足行為。"""
+        self._wire_empty_finmind(mock_fetcher, eps_df_8q)
+        with patch("data.yf_fundamentals.get_yf_fundamentals", return_value={}):
+            result = ForwardEPSCalculator(mock_fetcher).calculate("9999")
+        assert "insufficient" in result["confidence_reason"]
+        assert result["methods"]["consensus"]["available"] is False

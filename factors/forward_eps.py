@@ -79,12 +79,27 @@ class ForwardEPSCalculator:
             ttm_eps = float(eps_data.tail(4)["eps"].sum())
             result["ttm_eps"] = round(ttm_eps, 2)
 
+            # yfinance 基本面備援（FinMind 缺漏時免費補足）
+            try:
+                from data.yf_fundamentals import get_yf_fundamentals
+                yf_data = get_yf_fundamentals(stock_id)
+            except Exception:
+                yf_data = {}
+
             # Step 2: 營收 YoY 成長率（取近 6 個月平均）
             confidence_flags = []
             rev_data = self.fetcher.get_monthly_revenue(stock_id, months=6)
             if rev_data is None or len(rev_data) < 3:
                 growth_proxy = 0.0
-                confidence_flags.append("rev_insufficient")
+                # 備援：yfinance 的營收成長 / 獲利成長（小數）
+                yf_growth = yf_data.get("revenue_growth")
+                if yf_growth is None:
+                    yf_growth = yf_data.get("earnings_growth")
+                if yf_growth is not None:
+                    growth_proxy = float(yf_growth)
+                    result.setdefault("data_sources", []).append("yfinance:成長率")
+                else:
+                    confidence_flags.append("rev_insufficient")
             else:
                 yoy_series = rev_data["revenue_yoy"].dropna()
                 if yoy_series.empty:
@@ -250,9 +265,21 @@ class ForwardEPSCalculator:
                             current_pe / (adjusted_growth * 100), 2
                         )
                 else:
-                    confidence_flags.append("pe_data_insufficient")
+                    self._pe_fallback_yf(result, yf_data, forward_eps, current_price,
+                                         ttm_eps, adjusted_growth, confidence_flags)
             else:
-                confidence_flags.append("pe_data_insufficient")
+                self._pe_fallback_yf(result, yf_data, forward_eps, current_price,
+                                     ttm_eps, adjusted_growth, confidence_flags)
+
+            # yfinance 共識 EPS 自動填入「市場共識」算法（免費，免手動輸入）
+            yf_fwd = yf_data.get("forward_eps")
+            if yf_fwd and result.get("methods", {}).get("consensus"):
+                m = result["methods"]["consensus"]
+                if not m["available"]:
+                    m["eps"] = round(float(yf_fwd), 2)
+                    m["available"] = True
+                    m["source"] = "yfinance（Yahoo 分析師共識）"
+                    m["note"] = "免費自動取得"
 
             # Step 6: 信心度評估
             if not confidence_flags:
@@ -270,5 +297,34 @@ class ForwardEPSCalculator:
         except Exception as e:
             result["error"] = f"計算異常：{str(e)}"
             result["confidence"] = "low"
+
+        return result
+
+    @staticmethod
+    def _pe_fallback_yf(result, yf_data, forward_eps, current_price,
+                        ttm_eps, adjusted_growth, confidence_flags):
+        """FinMind 歷史 P/E 不足時，用 yfinance 的本益比推目標價（單點，非分位帶）。"""
+        pe = yf_data.get("forward_pe") or yf_data.get("trailing_pe")
+        if pe and forward_eps and current_price and pe > 0:
+            base = round(pe * forward_eps, 1)
+            result["pe_band"] = {
+                "p25": None, "median": round(pe, 1), "p75": None,
+                "current": round(current_price / ttm_eps, 1) if ttm_eps > 0 else None,
+            }
+            # 以 ±15% 本益比張開樂觀/悲觀
+            result["target_price"] = {
+                "bull": round(pe * 1.15 * forward_eps, 1),
+                "base": base,
+                "bear": round(pe * 0.85 * forward_eps, 1),
+            }
+            if current_price > 0:
+                result["upside_pct"] = round((base - current_price) / current_price * 100, 1)
+            if adjusted_growth > 0:
+                cur_pe = current_price / ttm_eps if ttm_eps > 0 else None
+                if cur_pe:
+                    result["peg_ratio"] = round(cur_pe / (adjusted_growth * 100), 2)
+            result.setdefault("data_sources", []).append("yfinance:本益比")
+        else:
+            confidence_flags.append("pe_data_insufficient")
 
         return result
