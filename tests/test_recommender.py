@@ -91,6 +91,28 @@ class TestDailyRecommender:
         assert ranks == sorted(ranks)
         assert ranks[0] == 1
 
+    def test_score_explain_shows_factors_and_weights(self):
+        """評分說明應列出各因子分×權重（基本面 45% 在前）。"""
+        sb = {"fundamental_score": 80, "chips_score": 70, "risk_score": 65,
+              "technical_score": 60, "momentum_score": 75}
+        s = DailyRecommender._format_score_explain(sb)
+        assert "基本面80×45%" in s
+        assert "籌碼70×20%" in s
+        assert "風險65×15%" in s
+        assert "前瞻EPS重排25%" in s
+        # 基本面應排在籌碼之前（基本面優先）
+        assert s.index("基本面") < s.index("籌碼")
+
+    def test_score_explain_skips_missing_factors(self):
+        """缺某因子分時該項略過，不報錯。"""
+        s = DailyRecommender._format_score_explain({"fundamental_score": 80})
+        assert "基本面80×45%" in s
+        assert "籌碼" not in s
+
+    def test_score_explain_empty_breakdown(self):
+        s = DailyRecommender._format_score_explain({})
+        assert "各因子加權" in s
+
     def test_fallback_reasons_returns_3(self):
         """_fallback_reasons 應回傳恰好 3 條理由。"""
         rec = DailyRecommender.__new__(DailyRecommender)
