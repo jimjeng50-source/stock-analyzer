@@ -17,7 +17,7 @@ from data.fetcher import FinMindFetcher
 from data.free_fallback import augment_factors_with_free_sources
 from factors import compute_chips, compute_technical, compute_fundamental, compute_momentum
 from models.scorer import Scorer
-from config import FACTOR_WEIGHTS, BATCH_FETCH_DELAY_SEC, BATCH_MAX_WORKERS
+from config import get_active_factor_weights, BATCH_FETCH_DELAY_SEC, BATCH_MAX_WORKERS
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,8 @@ class BatchScorer:
         """
         self.max_workers = max_workers
         self.as_of = as_of
-        self.scorer = Scorer(FACTOR_WEIGHTS)
+        # 讀取「目前生效」的權重（週度調參後的最新值，或預設）
+        self.scorer = Scorer(get_active_factor_weights())
         self.failed_df: pd.DataFrame = pd.DataFrame()
 
     def score_universe(

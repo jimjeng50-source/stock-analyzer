@@ -214,6 +214,42 @@ def _num(v):
         return "—"
 
 
+def job_weekly_tune() -> int:
+    """
+    每週推薦邏輯回顧＋調參：
+    依近半年已評估推薦（60 日報酬）的各因子分與實際報酬相關性，微調因子權重，
+    寫入 data/weights.json（下次掃描即生效），並推播調整說明到 Telegram。
+    目標：長期把 60 日勝率拉到 70% 以上。
+    """
+    from datetime import date
+    from screener.recommendation_db import RecommendationDB
+    from screener.weight_tuner import compute_tuned_weights, format_tune_message
+    from config import get_active_factor_weights, save_factor_weights
+    from alerts.notifier import Notifier
+
+    db = RecommendationDB()
+    df = db.get_recent_recommendations(n_days=180)
+    current = get_active_factor_weights()
+    new_weights, report = compute_tuned_weights(df, current)
+
+    if report["tuned"]:
+        save_factor_weights(new_weights, {
+            "updated_at": date.today().isoformat(),
+            "win_rate_60d": report["win_rate"],
+            "samples": report["n"],
+            "correlations": report["correlations"],
+        })
+        logger.info("週度調參：權重已更新 %s", report["changes"])
+    else:
+        logger.info("週度調參：%s", report["reason"])
+
+    try:
+        Notifier().send_telegram(format_tune_message(report))
+    except Exception as e:
+        logger.warning("週度調參推播失敗：%s", e)
+    return 0
+
+
 def job_backfill_history(start_str: str) -> int:
     """回補指定日期起的歷史推薦（真實歷史資料，時間點截斷）。"""
     from datetime import date as _date
@@ -410,7 +446,7 @@ def job_morning_report() -> int:
 
 
 JOBS = {"scan": job_scan, "risk": job_risk, "backfill": job_backfill,
-        "track-daily": job_track_daily,
+        "track-daily": job_track_daily, "weekly-tune": job_weekly_tune,
         "report-export": job_report_export, "morning-report": job_morning_report}
 
 

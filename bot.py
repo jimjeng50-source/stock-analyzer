@@ -11,7 +11,7 @@ from data.fetcher import FinMindFetcher
 from data.free_fallback import augment_factors_with_free_sources
 from factors import compute_chips, compute_technical, compute_fundamental, compute_momentum
 from models.scorer import Scorer
-from config import FACTOR_WEIGHTS, ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN
+from config import get_active_factor_weights, ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN
 
 logging.basicConfig(
     level=logging.INFO,
@@ -86,7 +86,7 @@ def _run_analysis(stock_id: str, use_ai: bool) -> tuple:
         financial_df=financial_df, margin_df=margin_df,
     )
 
-    result = Scorer(FACTOR_WEIGHTS).score(chips, technical, fundamental, momentum)
+    result = Scorer(get_active_factor_weights()).score(chips, technical, fundamental, momentum)
 
     ai_advice = ""
     if use_ai and ANTHROPIC_API_KEY:

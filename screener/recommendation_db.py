@@ -61,6 +61,7 @@ _MIGRATION_COLUMNS = {
     "hot_tags": "TEXT",
     "forward_eps": "REAL",
     "eps_growth_pct": "REAL",
+    "risk_score": "REAL",
 }
 
 # 推薦名單「兩個月每日績效」追蹤表：每檔推薦、每個交易日一列
@@ -149,14 +150,14 @@ class RecommendationDB:
             (recommend_date, rank, stock_id, stock_name, total_score, recommendation,
              current_price, reason_1, reason_2, reason_3, risk_warning,
              target_price, upside_pct, industry,
-             chips_score, fundamental_score, technical_score, momentum_score, hot_tags,
-             forward_eps, eps_growth_pct)
+             chips_score, fundamental_score, technical_score, momentum_score, risk_score,
+             hot_tags, forward_eps, eps_growth_pct)
         VALUES
             (:recommend_date, :rank, :stock_id, :stock_name, :total_score, :recommendation,
              :current_price, :reason_1, :reason_2, :reason_3, :risk_warning,
              :target_price, :upside_pct, :industry,
-             :chips_score, :fundamental_score, :technical_score, :momentum_score, :hot_tags,
-             :forward_eps, :eps_growth_pct)
+             :chips_score, :fundamental_score, :technical_score, :momentum_score, :risk_score,
+             :hot_tags, :forward_eps, :eps_growth_pct)
         """
         rows = []
         for rec in recommendations:
@@ -181,6 +182,7 @@ class RecommendationDB:
                 "fundamental_score": score_bd.get("fundamental_score"),
                 "technical_score": score_bd.get("technical_score"),
                 "momentum_score": score_bd.get("momentum_score"),
+                "risk_score": score_bd.get("risk_score"),
                 "hot_tags": ", ".join(rec.get("hot_tags", [])) or None,
                 "forward_eps": rec.get("forward_eps"),
                 "eps_growth_pct": rec.get("eps_growth_rate"),
