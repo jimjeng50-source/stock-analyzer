@@ -19,6 +19,7 @@ def _today_tw():
     return _now_tw().date()
 
 from data.fetcher import FinMindFetcher
+from data.free_fallback import augment_factors_with_free_sources
 from factors import compute_chips, compute_technical, compute_fundamental, compute_momentum
 from models.scorer import Scorer
 from config import get_runtime_config, save_local_config
@@ -145,6 +146,14 @@ with tab1:
             technical   = compute_technical(price_df)
             fundamental = compute_fundamental(revenue_df, financial_df, current_price)
             momentum    = compute_momentum(price_df)
+            # FinMind 配額用盡時，用免費 yfinance/T86 補基本面與籌碼，
+            # 讓個股分析與每日掃描對同一支股票算出一致的分數。
+            chips, fundamental = augment_factors_with_free_sources(
+                stock_id,
+                chips=chips, fundamental=fundamental, current_price=current_price,
+                institutional_df=institutional_df, revenue_df=revenue_df,
+                financial_df=financial_df, margin_df=margin_df,
+            )
             result      = Scorer(weights).score(chips, technical, fundamental, momentum)
 
         # 儲存到 session_state 供因子說明頁使用

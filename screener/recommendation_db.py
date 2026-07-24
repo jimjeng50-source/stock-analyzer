@@ -61,7 +61,26 @@ _MIGRATION_COLUMNS = {
     "hot_tags": "TEXT",
     "forward_eps": "REAL",
     "eps_growth_pct": "REAL",
+    "risk_score": "REAL",
 }
+
+# 推薦名單「兩個月每日績效」追蹤表：每檔推薦、每個交易日一列
+# （day_offset=0 為推薦當日買進價）。維持滾動 2 個月的績效曲線。
+_CREATE_DAILY_RETURNS = """
+CREATE TABLE IF NOT EXISTS recommendation_daily_returns (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    recommend_date DATE NOT NULL,
+    stock_id       TEXT NOT NULL,
+    stock_name     TEXT,
+    as_of_date     DATE NOT NULL,
+    day_offset     INTEGER,
+    entry_price    REAL,
+    close_price    REAL,
+    return_pct     REAL,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(recommend_date, stock_id, as_of_date)
+);
+"""
 
 _CREATE_SCAN_LOGS = """
 CREATE TABLE IF NOT EXISTS scan_logs (
@@ -105,6 +124,7 @@ class RecommendationDB:
         with self._conn() as conn:
             conn.execute(_CREATE_RECOMMENDATIONS)
             conn.execute(_CREATE_SCAN_LOGS)
+            conn.execute(_CREATE_DAILY_RETURNS)
             # migration：舊版資料庫補上新欄位
             existing_cols = {
                 row[1] for row in conn.execute("PRAGMA table_info(daily_recommendations)")
@@ -130,14 +150,14 @@ class RecommendationDB:
             (recommend_date, rank, stock_id, stock_name, total_score, recommendation,
              current_price, reason_1, reason_2, reason_3, risk_warning,
              target_price, upside_pct, industry,
-             chips_score, fundamental_score, technical_score, momentum_score, hot_tags,
-             forward_eps, eps_growth_pct)
+             chips_score, fundamental_score, technical_score, momentum_score, risk_score,
+             hot_tags, forward_eps, eps_growth_pct)
         VALUES
             (:recommend_date, :rank, :stock_id, :stock_name, :total_score, :recommendation,
              :current_price, :reason_1, :reason_2, :reason_3, :risk_warning,
              :target_price, :upside_pct, :industry,
-             :chips_score, :fundamental_score, :technical_score, :momentum_score, :hot_tags,
-             :forward_eps, :eps_growth_pct)
+             :chips_score, :fundamental_score, :technical_score, :momentum_score, :risk_score,
+             :hot_tags, :forward_eps, :eps_growth_pct)
         """
         rows = []
         for rec in recommendations:
@@ -162,6 +182,7 @@ class RecommendationDB:
                 "fundamental_score": score_bd.get("fundamental_score"),
                 "technical_score": score_bd.get("technical_score"),
                 "momentum_score": score_bd.get("momentum_score"),
+                "risk_score": score_bd.get("risk_score"),
                 "hot_tags": ", ".join(rec.get("hot_tags", [])) or None,
                 "forward_eps": rec.get("forward_eps"),
                 "eps_growth_pct": rec.get("eps_growth_rate"),
@@ -214,6 +235,108 @@ class RecommendationDB:
         if not rows:
             return pd.DataFrame()
         return pd.DataFrame([dict(r) for r in rows])
+
+    # ── 兩個月每日績效追蹤 ─────────────────────────────────────────────────────
+
+    def get_active_tracking_recommendations(self, window_days: int = 60) -> list:
+        """
+        取得仍在 2 個月追蹤窗內的推薦（去重 recommend_date+stock_id）。
+        回傳 [{recommend_date, stock_id, stock_name, entry_price}, ...]。
+        """
+        sql = """
+        SELECT recommend_date, stock_id,
+               MAX(stock_name) AS stock_name,
+               MAX(current_price) AS entry_price
+        FROM daily_recommendations
+        WHERE recommend_date >= date('now', :offset)
+          AND current_price IS NOT NULL
+        GROUP BY recommend_date, stock_id
+        ORDER BY recommend_date DESC
+        """
+        with self._conn() as conn:
+            rows = conn.execute(sql, {"offset": f"-{window_days} days"}).fetchall()
+        return [dict(r) for r in rows]
+
+    def save_daily_returns(self, rows: list) -> None:
+        """
+        批次寫入（upsert）每日績效列。每列需含：
+        recommend_date, stock_id, stock_name, as_of_date, day_offset,
+        entry_price, close_price, return_pct。
+        """
+        if not rows:
+            return
+        sql = """
+        INSERT INTO recommendation_daily_returns
+            (recommend_date, stock_id, stock_name, as_of_date, day_offset,
+             entry_price, close_price, return_pct)
+        VALUES
+            (:recommend_date, :stock_id, :stock_name, :as_of_date, :day_offset,
+             :entry_price, :close_price, :return_pct)
+        ON CONFLICT(recommend_date, stock_id, as_of_date) DO UPDATE SET
+            close_price=excluded.close_price,
+            return_pct=excluded.return_pct,
+            day_offset=excluded.day_offset
+        """
+        with self._conn() as conn:
+            conn.executemany(sql, rows)
+
+    def get_daily_returns(self, recommend_date, stock_id: str) -> pd.DataFrame:
+        """取得單一推薦的每日績效曲線（依 as_of_date 升序）。"""
+        date_str = recommend_date.isoformat() if isinstance(recommend_date, date) else str(recommend_date)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM recommendation_daily_returns "
+                "WHERE recommend_date=? AND stock_id=? ORDER BY as_of_date ASC",
+                (date_str, stock_id),
+            ).fetchall()
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame([dict(r) for r in rows])
+
+    def get_tracking_summary(self, window_days: int = 60) -> pd.DataFrame:
+        """
+        近 window_days 內每檔推薦的績效摘要（供 2 個月名單報告）：
+        entry_price、最新收盤/報酬、期間最佳/最差報酬（含最大回落）、追蹤天數。
+        """
+        sql = """
+        WITH latest AS (
+            SELECT recommend_date, stock_id, MAX(as_of_date) AS last_date
+            FROM recommendation_daily_returns
+            WHERE recommend_date >= date('now', :offset)
+            GROUP BY recommend_date, stock_id
+        )
+        SELECT d.recommend_date, d.stock_id,
+               MAX(d.stock_name) AS stock_name,
+               MAX(d.entry_price) AS entry_price,
+               COUNT(*) AS days_tracked,
+               MAX(d.return_pct) AS max_return_pct,
+               MIN(d.return_pct) AS min_return_pct,
+               (SELECT close_price FROM recommendation_daily_returns r
+                 WHERE r.recommend_date=d.recommend_date AND r.stock_id=d.stock_id
+                 ORDER BY r.as_of_date DESC LIMIT 1) AS last_close,
+               (SELECT return_pct FROM recommendation_daily_returns r
+                 WHERE r.recommend_date=d.recommend_date AND r.stock_id=d.stock_id
+                 ORDER BY r.as_of_date DESC LIMIT 1) AS last_return_pct
+        FROM recommendation_daily_returns d
+        WHERE d.recommend_date >= date('now', :offset)
+        GROUP BY d.recommend_date, d.stock_id
+        ORDER BY d.recommend_date DESC, d.stock_id ASC
+        """
+        with self._conn() as conn:
+            rows = conn.execute(sql, {"offset": f"-{window_days} days"}).fetchall()
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame([dict(r) for r in rows])
+
+    def prune_daily_returns(self, keep_days: int = 75) -> int:
+        """刪除超過保留窗（預設 75 天，2 個月+緩衝）的每日績效列，維持滾動名單。"""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM recommendation_daily_returns "
+                "WHERE recommend_date < date('now', ?)",
+                (f"-{keep_days} days",),
+            )
+            return cur.rowcount
 
     # ── 績效回填 ───────────────────────────────────────────────────────────────
 

@@ -196,11 +196,13 @@ class QuickFilter:
             from data.fetcher import DataFetcher
             fetcher = DataFetcher()
             rev_df = fetcher.get_monthly_revenue(stock_id, months=3)
-            if rev_df is None or rev_df.empty:
-                return None
-            if "revenue_yoy" in rev_df.columns:
+            if rev_df is not None and not rev_df.empty and "revenue_yoy" in rev_df.columns:
                 yoy = rev_df["revenue_yoy"].dropna()
-                return float(yoy.iloc[-1]) if not yoy.empty else None
+                if not yoy.empty:
+                    return float(yoy.iloc[-1])
+            # FinMind 月營收缺漏（如配額用盡）→ 用免費 yfinance 營收成長備援
+            from data.free_fallback import yf_revenue_yoy
+            return yf_revenue_yoy(stock_id)
         except Exception:
             pass
         return None

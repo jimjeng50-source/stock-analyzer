@@ -105,6 +105,151 @@ def job_backfill() -> int:
     return 0
 
 
+def job_track_daily() -> int:
+    """
+    更新推薦名單的「兩個月每日績效」曲線（滾動 2 個月）。
+
+    對每一檔仍在 60 天追蹤窗內的推薦：取推薦日買進價（current_price）為基準，
+    抓每個交易日收盤，計算逐日報酬，upsert 到 recommendation_daily_returns，
+    再清除超過保留窗的舊列。價格用免費 FinMind→yfinance 序列（get_price）。
+    """
+    from screener.recommendation_db import RecommendationDB
+    from data.fetcher import FinMindFetcher
+
+    db = RecommendationDB()
+    active = db.get_active_tracking_recommendations(window_days=60)
+    if not active:
+        logger.info("每日績效追蹤：無進行中的推薦")
+        return 0
+
+    price_cache = {}
+    total_rows = 0
+    for item in active:
+        sid = item["stock_id"]
+        rec_date = str(item["recommend_date"])
+        entry = item.get("entry_price")
+        name = item.get("stock_name") or sid
+        if not entry:
+            continue
+        try:
+            if sid not in price_cache:
+                # days=95：足以涵蓋 60 天窗（約 60 交易日≈84 日曆日）+ 緩衝
+                price_cache[sid] = FinMindFetcher(sid, days=95).get_price()
+            price_df = price_cache[sid]
+            if price_df is None or price_df.empty or "close" not in price_df.columns:
+                continue
+            sub = price_df[["date", "close"]].copy()
+            sub["date"] = sub["date"].astype(str)
+            sub = sub[sub["date"] >= rec_date].sort_values("date")
+            rows = []
+            for offset, (_, r) in enumerate(sub.iterrows()):
+                close = float(r["close"])
+                ret = (close / entry - 1) * 100 if entry else None
+                rows.append({
+                    "recommend_date": rec_date, "stock_id": sid, "stock_name": name,
+                    "as_of_date": str(r["date"]), "day_offset": offset,
+                    "entry_price": float(entry), "close_price": close, "return_pct": ret,
+                })
+            db.save_daily_returns(rows)
+            total_rows += len(rows)
+        except Exception as ex:
+            logger.warning("每日績效追蹤失敗 %s（%s）：%s", sid, rec_date, ex)
+
+    pruned = db.prune_daily_returns(keep_days=75)
+    logger.info("每日績效追蹤：更新 %d 列，清除 %d 舊列", total_rows, pruned)
+
+    _export_tracking_report(db)
+    return 0
+
+
+def _export_tracking_report(db) -> None:
+    """輸出兩個月推薦名單績效報告（reports/tracking_2m.csv + .md）。"""
+    import os
+    from datetime import date
+
+    os.makedirs("reports", exist_ok=True)
+    summary = db.get_tracking_summary(window_days=60)
+    csv_path = "reports/tracking_2m.csv"
+    md_path = "reports/tracking_2m.md"
+
+    if summary is None or summary.empty:
+        with open(csv_path, "w", encoding="utf-8-sig") as f:
+            f.write("（近兩個月尚無推薦追蹤紀錄）\n")
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write("# 兩個月推薦名單績效\n\n（近兩個月尚無推薦追蹤紀錄）\n")
+        logger.info("兩個月績效報告：無資料")
+        return
+
+    summary.to_csv(csv_path, index=False, encoding="utf-8-sig")
+
+    def _f(v, s=""):
+        return f"{v:+.1f}{s}" if isinstance(v, (int, float)) else "—"
+
+    lines = [
+        "# 兩個月推薦名單績效追蹤",
+        "",
+        f"產出日期：{date.today().isoformat()}（滾動追蹤最近 60 天內的推薦）",
+        "",
+        "| 推薦日 | 代號 | 名稱 | 買進價 | 最新價 | 最新報酬 | 期間最佳 | 期間最差 | 追蹤天數 |",
+        "|------|------|------|------|------|------|------|------|------|",
+    ]
+    for _, r in summary.iterrows():
+        lines.append(
+            f"| {r['recommend_date']} | {r['stock_id']} | {r.get('stock_name','')} "
+            f"| {r['entry_price']:.1f} | {(_num(r.get('last_close')))} "
+            f"| {_f(r.get('last_return_pct'), '%')} | {_f(r.get('max_return_pct'), '%')} "
+            f"| {_f(r.get('min_return_pct'), '%')} | {int(r['days_tracked'])} |"
+        )
+    lines += ["", "*由 stock-analyzer 自動產出。僅供研究參考，不構成投資建議。*"]
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    logger.info("兩個月績效報告已輸出：%s、%s（%d 檔）", csv_path, md_path, len(summary))
+
+
+def _num(v):
+    """數值格式化小工具（None→—）。"""
+    try:
+        return f"{float(v):.1f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def job_weekly_tune() -> int:
+    """
+    每週推薦邏輯回顧＋調參：
+    依近半年已評估推薦（60 日報酬）的各因子分與實際報酬相關性，微調因子權重，
+    寫入 data/weights.json（下次掃描即生效），並推播調整說明到 Telegram。
+    目標：長期把 60 日勝率拉到 70% 以上。
+    """
+    from datetime import date
+    from screener.recommendation_db import RecommendationDB
+    from screener.weight_tuner import compute_tuned_weights, format_tune_message
+    from config import get_active_factor_weights, save_factor_weights
+    from alerts.notifier import Notifier
+
+    db = RecommendationDB()
+    df = db.get_recent_recommendations(n_days=180)
+    current = get_active_factor_weights()
+    new_weights, report = compute_tuned_weights(df, current)
+
+    if report["tuned"]:
+        save_factor_weights(new_weights, {
+            "updated_at": date.today().isoformat(),
+            "win_rate_60d": report["win_rate"],
+            "samples": report["n"],
+            "correlations": report["correlations"],
+        })
+        logger.info("週度調參：權重已更新 %s", report["changes"])
+    else:
+        logger.info("週度調參：%s", report["reason"])
+
+    try:
+        Notifier().send_telegram(format_tune_message(report))
+    except Exception as e:
+        logger.warning("週度調參推播失敗：%s", e)
+    return 0
+
+
 def job_backfill_history(start_str: str) -> int:
     """回補指定日期起的歷史推薦（真實歷史資料，時間點截斷）。"""
     from datetime import date as _date
@@ -301,6 +446,7 @@ def job_morning_report() -> int:
 
 
 JOBS = {"scan": job_scan, "risk": job_risk, "backfill": job_backfill,
+        "track-daily": job_track_daily, "weekly-tune": job_weekly_tune,
         "report-export": job_report_export, "morning-report": job_morning_report}
 
 

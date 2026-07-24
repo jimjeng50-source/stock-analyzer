@@ -8,6 +8,10 @@ import pandas as pd
 from unittest.mock import patch, MagicMock
 
 from screener.batch_scorer import BatchScorer
+from data.free_fallback import (
+    augment_fundamental_with_yf,
+    augment_chips_with_t86,
+)
 
 
 _MOCK_SCORE_RESULT = {
@@ -46,6 +50,18 @@ _PATCHES = [
     patch("screener.batch_scorer.Scorer"),
     patch("screener.batch_scorer.time.sleep"),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _no_external_network():
+    """
+    測試中 revenue/financial/法人 皆為空會觸發 yfinance 與 T86 備援；
+    autouse patch 掉，避免對外真實網路請求（flaky/慢）。
+    個別測試若要驗證備援，可自行再 patch。
+    """
+    with patch("data.yf_fundamentals.get_yf_fundamentals", return_value={}), \
+         patch("data.twse_chips.get_t86_institutional", return_value=pd.DataFrame()):
+        yield
 
 
 class TestBatchScorer:
@@ -145,3 +161,112 @@ class TestBatchScorer:
         assert len(result) == 1
         assert result.iloc[0]["stock_id"] == "2330"
         assert result.iloc[0]["total_score"] == pytest.approx(75.0)
+
+
+class TestAugmentFundamentalYf:
+    """FinMind 財報全缺時，用 yfinance 免費備援補基本面。"""
+
+    _EMPTY_FUND = {
+        "rev_yoy": 0.0, "rev_mom": 0.0, "rev_3m_trend": 0, "rev_12m_high": 0,
+        "eps_latest": 0.0, "eps_qoq": 0.0, "eps_yoy": 0.0,
+        "gross_margin": 0.0, "gpm_trend": 0.0, "pe_ratio": 0.0,
+    }
+
+    def test_fills_empty_fields_from_yf(self):
+        """空欄位應由 yfinance 值填入（小數→百分比換算）。"""
+        yf_data = {
+            "trailing_eps": 35.1, "forward_eps": 40.0,
+            "trailing_pe": 18.5, "forward_pe": 16.0,
+            "revenue_growth": 0.153, "earnings_growth": 0.20,
+            "gross_margins": 0.53, "source_suffix": ".TW",
+        }
+        with patch("data.yf_fundamentals.get_yf_fundamentals", return_value=yf_data):
+            out = augment_fundamental_with_yf("2330", dict(self._EMPTY_FUND), 850.0)
+        assert out["rev_yoy"] == pytest.approx(15.3)
+        assert out["gross_margin"] == pytest.approx(53.0)
+        assert out["pe_ratio"] == pytest.approx(18.5)
+        assert out["eps_latest"] == pytest.approx(35.1)
+
+    def test_does_not_overwrite_existing_values(self):
+        """FinMind 已有真實值時不應被 yfinance 蓋掉。"""
+        yf_data = {
+            "trailing_eps": 99.0, "trailing_pe": 99.0,
+            "revenue_growth": 0.99, "gross_margins": 0.99,
+            "earnings_growth": None, "forward_eps": None, "forward_pe": None,
+            "source_suffix": ".TW",
+        }
+        existing = dict(self._EMPTY_FUND)
+        existing.update({"rev_yoy": 12.0, "gross_margin": 45.0, "pe_ratio": 20.0, "eps_latest": 5.0})
+        with patch("data.yf_fundamentals.get_yf_fundamentals", return_value=yf_data):
+            out = augment_fundamental_with_yf("2330", existing, 100.0)
+        assert out["rev_yoy"] == 12.0
+        assert out["gross_margin"] == 45.0
+        assert out["pe_ratio"] == 20.0
+        assert out["eps_latest"] == 5.0
+
+    def test_empty_yf_returns_unchanged(self):
+        """yfinance 也抓不到時，原 dict 原樣返回。"""
+        with patch("data.yf_fundamentals.get_yf_fundamentals", return_value={}):
+            out = augment_fundamental_with_yf("9999", dict(self._EMPTY_FUND), 50.0)
+        assert out == self._EMPTY_FUND
+
+
+class TestAugmentChipsT86:
+    """FinMind 三大法人全缺時，用免費證交所 T86 補籌碼面。"""
+
+    _EMPTY_CHIPS = {
+        "fi_5d_net": 0.0, "fi_20d_net": 0.0, "fi_consecutive": 0, "fi_trend": 0.0,
+        "it_5d_net": 0.0, "it_20d_net": 0.0, "it_consecutive": 0,
+        "dealer_5d_net": 0.0, "margin_chg_5d": 0.0, "short_chg_5d": 0.0,
+    }
+
+    @staticmethod
+    def _t86_df():
+        """兩個交易日、外資連買、投信買超、自營商賣超的長格式表。"""
+        return pd.DataFrame([
+            {"date": "2026-07-23", "name": "外資", "net": 1_000_000},
+            {"date": "2026-07-23", "name": "投信", "net": 200_000},
+            {"date": "2026-07-23", "name": "自營商", "net": -50_000},
+            {"date": "2026-07-24", "name": "外資", "net": 800_000},
+            {"date": "2026-07-24", "name": "投信", "net": 150_000},
+            {"date": "2026-07-24", "name": "自營商", "net": -30_000},
+        ])
+
+    def test_fills_institutional_from_t86(self):
+        """空籌碼應由 T86 法人買賣超填入，保留融資融券欄位。"""
+        chips = dict(self._EMPTY_CHIPS)
+        chips["margin_chg_5d"] = 3.3   # 模擬既有融資欄，不應被覆蓋
+        with patch("data.twse_chips.get_t86_institutional", return_value=self._t86_df()):
+            out = augment_chips_with_t86("2330", chips, pd.DataFrame())
+        assert out["fi_5d_net"] == pytest.approx(1_800_000)   # 兩日外資加總
+        assert out["it_5d_net"] == pytest.approx(350_000)
+        assert out["dealer_5d_net"] == pytest.approx(-80_000)
+        assert out["fi_consecutive"] == 2                       # 連兩日買超
+        assert out["margin_chg_5d"] == 3.3                      # 融資欄保留
+
+    def test_empty_t86_returns_unchanged(self):
+        """T86 抓不到（假日/該股無資料）→ 原 chips 原樣返回。"""
+        with patch("data.twse_chips.get_t86_institutional", return_value=pd.DataFrame()):
+            out = augment_chips_with_t86("9999", dict(self._EMPTY_CHIPS), pd.DataFrame())
+        assert out == self._EMPTY_CHIPS
+
+    def test_t86_exception_returns_unchanged(self):
+        """T86 抓取拋例外時不應中斷評分，原 chips 原樣返回。"""
+        with patch("data.twse_chips.get_t86_institutional", side_effect=RuntimeError("boom")):
+            out = augment_chips_with_t86("2330", dict(self._EMPTY_CHIPS), pd.DataFrame())
+        assert out == self._EMPTY_CHIPS
+
+    def test_not_triggered_when_as_of_set(self):
+        """歷史回溯（as_of 有值）不應觸發 T86（避免抓到未來資料）。"""
+        with patch("screener.batch_scorer.FinMindFetcher") as MockFetcher, \
+             patch("screener.batch_scorer.compute_chips", return_value={}), \
+             patch("screener.batch_scorer.compute_technical", return_value={}), \
+             patch("screener.batch_scorer.compute_fundamental", return_value={}), \
+             patch("screener.batch_scorer.compute_momentum", return_value={}), \
+             patch("screener.batch_scorer.Scorer") as MockScorer, \
+             patch("screener.batch_scorer.time.sleep"), \
+             patch("data.twse_chips.get_t86_institutional") as mock_t86:
+            _setup_mocks(MockFetcher, MockScorer)
+            bs = BatchScorer(max_workers=1, as_of="2026-06-01")
+            bs.score_universe(["2330"], show_progress=False)
+        mock_t86.assert_not_called()

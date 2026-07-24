@@ -23,6 +23,7 @@ from config import (
     SCREENER_MIN_RECOMMEND_SCORE,
     SCREENER_REGIME_FILTER,
     FORWARD_EPS_RERANK_WEIGHT,
+    FACTOR_WEIGHTS,
     CLAUDE_MODEL,
     get_runtime_config,
 )
@@ -206,14 +207,17 @@ class DailyRecommender:
                     "current_price": row.get("current_price"),
                     "key_reasons": reasons,
                     "target_price_base": deep.get("target_price_base"),
+                    "target_price_bull": deep.get("target_price_bull"),
+                    "target_price_bear": deep.get("target_price_bear"),
                     "upside_pct": deep.get("upside_pct"),
                     "forward_eps": deep.get("forward_eps"),
                     "eps_growth_rate": deep.get("eps_growth_rate"),
                     "risk_warning": self._generate_risk_warning(stock_data),
                     "industry": row.get("industry", ""),
                     "score_breakdown": {
-                        "chips_score": row.get("chips_score"),
                         "fundamental_score": row.get("fundamental_score"),
+                        "chips_score": row.get("chips_score"),
+                        "risk_score": row.get("risk_score"),
                         "technical_score": row.get("technical_score"),
                         "momentum_score": row.get("momentum_score"),
                     },
@@ -411,7 +415,10 @@ class DailyRecommender:
             try:
                 eps_result = eps_calc.calculate(sid)
                 if not eps_result.get("error"):
-                    deep["target_price_base"] = (eps_result.get("target_price") or {}).get("base")
+                    tp_dict = eps_result.get("target_price") or {}
+                    deep["target_price_base"] = tp_dict.get("base")
+                    deep["target_price_bull"] = tp_dict.get("bull")
+                    deep["target_price_bear"] = tp_dict.get("bear")
                     deep["upside_pct"] = eps_result.get("upside_pct")
                     deep["forward_eps"] = eps_result.get("forward_eps_1y")
                     deep["eps_growth_rate"] = eps_result.get("eps_growth_rate")
@@ -579,6 +586,30 @@ class DailyRecommender:
 
     # ── Phase 7：訊息格式化 ────────────────────────────────────────────────────
 
+    @staticmethod
+    def _format_score_explain(sb: dict) -> str:
+        """
+        一行說明總分怎麼算：各因子分 × 權重（基本面優先），
+        最後再依前瞻 EPS 重排。權重取自 config.FACTOR_WEIGHTS，
+        未來週度調參後會自動反映最新權重。
+        """
+        labels = [
+            ("fundamental_score", "基本面", "fundamental"),
+            ("chips_score", "籌碼", "chips"),
+            ("risk_score", "風險", "risk"),
+            ("technical_score", "技術", "technical"),
+            ("momentum_score", "動能", "momentum"),
+        ]
+        parts = []
+        for key, name, wkey in labels:
+            val = sb.get(key)
+            if val is None:
+                continue
+            w = FACTOR_WEIGHTS.get(wkey, 0) * 100
+            parts.append(f"{name}{val:.0f}×{w:.0f}%")
+        body = " ＋ ".join(parts) if parts else "各因子加權平均"
+        return f"🧮 {body}，再依前瞻EPS重排{FORWARD_EPS_RERANK_WEIGHT*100:.0f}%"
+
     def _format_message(self, result: dict) -> str:
         """格式化 Telegram 推播訊息。"""
         today_str = result["date"]
@@ -647,15 +678,26 @@ class DailyRecommender:
             reasons = rec.get("key_reasons", [])
             risk = rec.get("risk_warning", "")
             tp = rec.get("target_price_base")
+            tp_bull = rec.get("target_price_bull")
+            tp_bear = rec.get("target_price_bear")
             upside = rec.get("upside_pct")
 
             lines += ["", f"{icon} {sid} {name}"]
             lines.append(f"💰 {price:.0f} 元｜評分 {score:.0f}/100")
+            # 分數怎麼算：各因子分×權重（基本面優先）
+            sb = rec.get("score_breakdown") or {}
+            lines.append(self._format_score_explain(sb))
             hot_tags = rec.get("hot_tags", [])
             if hot_tags:
                 lines.append(f"🔥 熱門：{'、'.join(hot_tags)}")
+            # 目標價：優先顯示 PE 帶三情境（保守/基準/樂觀）
             if tp and upside is not None:
-                lines.append(f"🎯 目標價：{tp:.0f} 元（{upside:+.0f}%）")
+                if tp_bear and tp_bull:
+                    lines.append(
+                        f"🎯 目標價：{tp:.0f} 元（{upside:+.0f}%）"
+                        f"｜區間 {tp_bear:.0f}~{tp_bull:.0f}")
+                else:
+                    lines.append(f"🎯 目標價：{tp:.0f} 元（{upside:+.0f}%）")
             feps = rec.get("forward_eps")
             eps_growth = rec.get("eps_growth_rate")
             if feps is not None:
@@ -663,8 +705,15 @@ class DailyRecommender:
                 lines.append(f"📈 Forward EPS：{feps:.2f} 元{growth_str}")
             if price:
                 stop_loss = price * 0.88
-                take_profit = tp if tp else price * 1.15
-                lines.append(f"🛡️ 停損參考：{stop_loss:.0f} 元（-12% 或跌破60日線）｜停利參考：{take_profit:.0f} 元")
+                if tp:
+                    tp_note = "PE帶推估"
+                    take_profit = tp
+                else:
+                    tp_note = "＋15%概估（前瞻資料不足）"
+                    take_profit = price * 1.15
+                lines.append(
+                    f"🛡️ 停損參考：{stop_loss:.0f} 元（-12% 或跌破60日線）"
+                    f"｜停利參考：{take_profit:.0f} 元（{tp_note}）")
             for r in reasons:
                 lines.append(f"✅ {r}")
             if risk:

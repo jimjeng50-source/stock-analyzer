@@ -19,7 +19,7 @@ on:
       job:
         description: "要執行的任務"
         type: choice
-        options: [scan, risk, backfill, backfill-history, report-export, morning-report, all]
+        options: [scan, risk, backfill, track-daily, weekly-tune, backfill-history, report-export, morning-report, all]
         default: all
       start_date:
         description: "backfill-history 起始日（YYYY-MM-DD）"
@@ -76,6 +76,11 @@ jobs:
         if: ${{ always() && (github.event.schedule == '0 9 * * 1-5' || inputs.job == 'risk' || inputs.job == 'all') }}
         run: python jobs.py risk
 
+      # ── 平日 17:00（掃描後）：更新兩個月推薦名單每日績效曲線 ──────────
+      - name: Daily performance tracking
+        if: ${{ always() && (github.event.schedule == '0 9 * * 1-5' || inputs.job == 'track-daily' || inputs.job == 'all') }}
+        run: python jobs.py track-daily
+
       # ── 週一 09:00：績效回填 ─────────────────────────────────────
       - name: Performance backfill
         if: ${{ always() && (github.event.schedule == '0 1 * * 1' || inputs.job == 'backfill' || inputs.job == 'all') }}
@@ -91,6 +96,11 @@ jobs:
         if: ${{ always() && (github.event.schedule == '0 1 * * 1' || inputs.job == 'report-export' || inputs.job == 'backfill-history' || inputs.job == 'all') }}
         run: python jobs.py report-export
 
+      # ── 週一（報告後）＋手動：推薦邏輯回顧＋調參（更新 weights.json）──
+      - name: Weekly logic tuning
+        if: ${{ always() && (github.event.schedule == '0 1 * * 1' || inputs.job == 'weekly-tune') }}
+        run: python jobs.py weekly-tune
+
       # ── 把更新後的資料庫 commit 回 repo（推薦歷史持久化）─────────
       # always()：無論前面步驟成敗，只要有產生新資料就 commit，確保不流失
       - name: Commit updated databases
@@ -98,7 +108,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/*.db reports/ 2>/dev/null || true
+          git add data/*.db data/weights.json reports/ 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "chore: update recommendation data [skip ci]"
             git pull --rebase origin main

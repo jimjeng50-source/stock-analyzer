@@ -73,6 +73,8 @@ FUNDAMENTAL_DAYS = 450
 
 # 因子權重（總和 = 1.0）
 # v5 穩健配置：基本面優先（長線投資導向），籌碼保留領先性、技術/動能降為輔助
+# 註：這是「預設」權重；週度調參（job weekly-tune）會把最新權重寫到
+# data/weights.json，執行時以 get_active_factor_weights() 讀取最新值。
 FACTOR_WEIGHTS = {
     "chips":       0.20,
     "fundamental": 0.45,
@@ -80,6 +82,37 @@ FACTOR_WEIGHTS = {
     "momentum":    0.10,
     "risk":        0.15,
 }
+
+# 可調整權重的持久化位置（由 workflow commit 回 repo；非 gitignore）
+WEIGHTS_STORE_PATH = "data/weights.json"
+
+
+def get_active_factor_weights() -> dict:
+    """
+    讀取「目前生效」的因子權重：週度調參後寫入 data/weights.json 的最新值；
+    無檔／格式無效／缺鍵時，回退到預設 FACTOR_WEIGHTS。
+    """
+    try:
+        with open(WEIGHTS_STORE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        w = data.get("factor_weights")
+        if isinstance(w, dict) and set(FACTOR_WEIGHTS).issubset(w.keys()):
+            vals = {k: float(w[k]) for k in FACTOR_WEIGHTS}
+            if all(v >= 0 for v in vals.values()) and sum(vals.values()) > 0:
+                return vals
+    except Exception:
+        pass
+    return dict(FACTOR_WEIGHTS)
+
+
+def save_factor_weights(weights: dict, meta: dict = None) -> None:
+    """把調整後的因子權重寫入 data/weights.json（含調參當時的 metadata）。"""
+    os.makedirs(os.path.dirname(WEIGHTS_STORE_PATH) or ".", exist_ok=True)
+    payload = {"factor_weights": {k: round(float(v), 4) for k, v in weights.items()}}
+    if meta:
+        payload.update(meta)
+    with open(WEIGHTS_STORE_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 # 評分門檻（對應投資建議標誌）
 SCORE_THRESHOLDS = {

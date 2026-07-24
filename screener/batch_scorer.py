@@ -14,9 +14,10 @@ from datetime import datetime
 import pandas as pd
 
 from data.fetcher import FinMindFetcher
+from data.free_fallback import augment_factors_with_free_sources
 from factors import compute_chips, compute_technical, compute_fundamental, compute_momentum
 from models.scorer import Scorer
-from config import FACTOR_WEIGHTS, BATCH_FETCH_DELAY_SEC, BATCH_MAX_WORKERS
+from config import get_active_factor_weights, BATCH_FETCH_DELAY_SEC, BATCH_MAX_WORKERS
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,8 @@ class BatchScorer:
         """
         self.max_workers = max_workers
         self.as_of = as_of
-        self.scorer = Scorer(FACTOR_WEIGHTS)
+        # 讀取「目前生效」的權重（週度調參後的最新值，或預設）
+        self.scorer = Scorer(get_active_factor_weights())
         self.failed_df: pd.DataFrame = pd.DataFrame()
 
     def score_universe(
@@ -132,6 +134,17 @@ class BatchScorer:
                 technical = compute_technical(price_df)
                 fundamental = compute_fundamental(revenue_df, financial_df, current_price)
                 momentum = compute_momentum(price_df)
+
+                # FinMind 配額用盡（402/403）→ 用免費資料補基本面（yfinance）與
+                # 籌碼（證交所 T86），避免 45%/20% 權重全給中性/懲罰分、拉低總分。
+                # 歷史回溯（as_of 有值）不用 T86，避免抓到未來資料。
+                chips, fundamental = augment_factors_with_free_sources(
+                    stock_id,
+                    chips=chips, fundamental=fundamental, current_price=current_price,
+                    institutional_df=institutional_df, revenue_df=revenue_df,
+                    financial_df=financial_df, margin_df=margin_df,
+                    allow_t86=(self.as_of is None),
+                )
 
                 result = self.scorer.score(chips, technical, fundamental, momentum)
 

@@ -112,3 +112,75 @@ class TestRecommendationDB:
         assert ret5 is not None
         expected = (920.0 / 850.0 - 1) * 100
         assert abs(ret5 - expected) < 0.01
+
+
+class TestDailyReturnTracking:
+    """兩個月每日績效追蹤（recommendation_daily_returns）。"""
+
+    def test_table_created(self, db):
+        conn = sqlite3.connect(db.db_path)
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        conn.close()
+        assert "recommendation_daily_returns" in tables
+
+    def test_active_tracking_lists_recent_recs(self, db):
+        today = date.today()
+        db.save_recommendations(today, [_SAMPLE_REC])
+        active = db.get_active_tracking_recommendations(window_days=60)
+        assert len(active) == 1
+        assert active[0]["stock_id"] == "2330"
+        assert active[0]["entry_price"] == 850.0
+
+    def _rows(self, rec_date):
+        entry = 100.0
+        pts = [("2026-07-01", 0, 100.0), ("2026-07-02", 1, 105.0), ("2026-07-03", 2, 98.0)]
+        return [
+            {"recommend_date": rec_date, "stock_id": "2330", "stock_name": "台積電",
+             "as_of_date": d, "day_offset": off, "entry_price": entry,
+             "close_price": c, "return_pct": (c / entry - 1) * 100}
+            for d, off, c in pts
+        ]
+
+    def test_save_and_get_daily_returns(self, db):
+        db.save_daily_returns(self._rows("2026-07-01"))
+        curve = db.get_daily_returns("2026-07-01", "2330")
+        assert len(curve) == 3
+        assert list(curve["day_offset"]) == [0, 1, 2]
+        assert curve.iloc[1]["return_pct"] == pytest.approx(5.0)
+
+    def test_daily_returns_upsert(self, db):
+        db.save_daily_returns(self._rows("2026-07-01"))
+        # 同 (rec_date, stock, as_of) 再寫入不同收盤 → 應更新而非新增
+        db.save_daily_returns([{
+            "recommend_date": "2026-07-01", "stock_id": "2330", "stock_name": "台積電",
+            "as_of_date": "2026-07-02", "day_offset": 1, "entry_price": 100.0,
+            "close_price": 110.0, "return_pct": 10.0}])
+        curve = db.get_daily_returns("2026-07-01", "2330")
+        assert len(curve) == 3
+        row = curve[curve["as_of_date"] == "2026-07-02"].iloc[0]
+        assert row["return_pct"] == pytest.approx(10.0)
+
+    def test_tracking_summary(self, db):
+        # recommend_date must be within window → use today for the summary window filter
+        today = date.today().isoformat()
+        rows = self._rows(today)
+        for r in rows:
+            r["as_of_date"] = today if r["day_offset"] == 0 else r["as_of_date"]
+        db.save_daily_returns(rows)
+        summary = db.get_tracking_summary(window_days=60)
+        assert not summary.empty
+        s = summary.iloc[0]
+        assert s["entry_price"] == pytest.approx(100.0)
+        assert s["max_return_pct"] == pytest.approx(5.0)
+        assert s["min_return_pct"] == pytest.approx(-2.0)
+        assert s["days_tracked"] == 3
+
+    def test_prune_removes_old(self, db):
+        db.save_daily_returns([{
+            "recommend_date": "2020-01-01", "stock_id": "2330", "stock_name": "台積電",
+            "as_of_date": "2020-01-01", "day_offset": 0, "entry_price": 100.0,
+            "close_price": 100.0, "return_pct": 0.0}])
+        deleted = db.prune_daily_returns(keep_days=75)
+        assert deleted == 1
+        assert db.get_daily_returns("2020-01-01", "2330").empty
