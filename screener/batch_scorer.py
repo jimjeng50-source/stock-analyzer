@@ -140,6 +140,11 @@ class BatchScorer:
                     fundamental = self._augment_fundamental_yf(
                         stock_id, fundamental, current_price)
 
+                # FinMind 三大法人缺漏 → 用免費證交所 T86 補籌碼（20% 權重）。
+                # 僅即時掃描（as_of 為 None）可用；歷史回溯用 T86 會抓到未來資料。
+                if (institutional_df is None or institutional_df.empty) and self.as_of is None:
+                    chips = self._augment_chips_t86(stock_id, chips, margin_df)
+
                 result = self.scorer.score(chips, technical, fundamental, momentum)
 
                 time.sleep(BATCH_FETCH_DELAY_SEC)
@@ -202,3 +207,27 @@ class BatchScorer:
             fundamental["eps_latest"] = round(yf["trailing_eps"], 2)
 
         return fundamental
+
+    @staticmethod
+    def _augment_chips_t86(stock_id: str, chips: dict, margin_df) -> dict:
+        """
+        FinMind 三大法人全缺時，用免費證交所 T86 補籌碼面。
+
+        只覆蓋「法人相關」欄位（外資/投信/自營商），保留原融資融券欄位。
+        T86 抓不到（假日/該股無資料/網路失敗）→ 原 chips 原樣返回。
+        """
+        try:
+            from data.twse_chips import get_t86_institutional
+            inst = get_t86_institutional(stock_id)
+        except Exception:
+            inst = None
+        if inst is None or inst.empty:
+            return chips
+
+        t86 = compute_chips(inst, pd.DataFrame())
+        inst_keys = ["fi_5d_net", "fi_20d_net", "fi_consecutive", "fi_trend",
+                     "it_5d_net", "it_20d_net", "it_consecutive", "dealer_5d_net"]
+        for k in inst_keys:
+            if t86.get(k):
+                chips[k] = t86[k]
+        return chips

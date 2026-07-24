@@ -49,13 +49,14 @@ _PATCHES = [
 
 
 @pytest.fixture(autouse=True)
-def _no_yf_network():
+def _no_external_network():
     """
-    測試中 revenue/financial 皆為空會觸發 yfinance 備援；
+    測試中 revenue/financial/法人 皆為空會觸發 yfinance 與 T86 備援；
     autouse patch 掉，避免對外真實網路請求（flaky/慢）。
     個別測試若要驗證備援，可自行再 patch。
     """
-    with patch("data.yf_fundamentals.get_yf_fundamentals", return_value={}):
+    with patch("data.yf_fundamentals.get_yf_fundamentals", return_value={}), \
+         patch("data.twse_chips.get_t86_institutional", return_value=pd.DataFrame()):
         yield
 
 
@@ -204,3 +205,64 @@ class TestAugmentFundamentalYf:
         with patch("data.yf_fundamentals.get_yf_fundamentals", return_value={}):
             out = BatchScorer._augment_fundamental_yf("9999", dict(self._EMPTY_FUND), 50.0)
         assert out == self._EMPTY_FUND
+
+
+class TestAugmentChipsT86:
+    """FinMind 三大法人全缺時，用免費證交所 T86 補籌碼面。"""
+
+    _EMPTY_CHIPS = {
+        "fi_5d_net": 0.0, "fi_20d_net": 0.0, "fi_consecutive": 0, "fi_trend": 0.0,
+        "it_5d_net": 0.0, "it_20d_net": 0.0, "it_consecutive": 0,
+        "dealer_5d_net": 0.0, "margin_chg_5d": 0.0, "short_chg_5d": 0.0,
+    }
+
+    @staticmethod
+    def _t86_df():
+        """兩個交易日、外資連買、投信買超、自營商賣超的長格式表。"""
+        return pd.DataFrame([
+            {"date": "2026-07-23", "name": "外資", "net": 1_000_000},
+            {"date": "2026-07-23", "name": "投信", "net": 200_000},
+            {"date": "2026-07-23", "name": "自營商", "net": -50_000},
+            {"date": "2026-07-24", "name": "外資", "net": 800_000},
+            {"date": "2026-07-24", "name": "投信", "net": 150_000},
+            {"date": "2026-07-24", "name": "自營商", "net": -30_000},
+        ])
+
+    def test_fills_institutional_from_t86(self):
+        """空籌碼應由 T86 法人買賣超填入，保留融資融券欄位。"""
+        chips = dict(self._EMPTY_CHIPS)
+        chips["margin_chg_5d"] = 3.3   # 模擬既有融資欄，不應被覆蓋
+        with patch("data.twse_chips.get_t86_institutional", return_value=self._t86_df()):
+            out = BatchScorer._augment_chips_t86("2330", chips, pd.DataFrame())
+        assert out["fi_5d_net"] == pytest.approx(1_800_000)   # 兩日外資加總
+        assert out["it_5d_net"] == pytest.approx(350_000)
+        assert out["dealer_5d_net"] == pytest.approx(-80_000)
+        assert out["fi_consecutive"] == 2                       # 連兩日買超
+        assert out["margin_chg_5d"] == 3.3                      # 融資欄保留
+
+    def test_empty_t86_returns_unchanged(self):
+        """T86 抓不到（假日/該股無資料）→ 原 chips 原樣返回。"""
+        with patch("data.twse_chips.get_t86_institutional", return_value=pd.DataFrame()):
+            out = BatchScorer._augment_chips_t86("9999", dict(self._EMPTY_CHIPS), pd.DataFrame())
+        assert out == self._EMPTY_CHIPS
+
+    def test_t86_exception_returns_unchanged(self):
+        """T86 抓取拋例外時不應中斷評分，原 chips 原樣返回。"""
+        with patch("data.twse_chips.get_t86_institutional", side_effect=RuntimeError("boom")):
+            out = BatchScorer._augment_chips_t86("2330", dict(self._EMPTY_CHIPS), pd.DataFrame())
+        assert out == self._EMPTY_CHIPS
+
+    def test_not_triggered_when_as_of_set(self):
+        """歷史回溯（as_of 有值）不應觸發 T86（避免抓到未來資料）。"""
+        with patch("screener.batch_scorer.FinMindFetcher") as MockFetcher, \
+             patch("screener.batch_scorer.compute_chips", return_value={}), \
+             patch("screener.batch_scorer.compute_technical", return_value={}), \
+             patch("screener.batch_scorer.compute_fundamental", return_value={}), \
+             patch("screener.batch_scorer.compute_momentum", return_value={}), \
+             patch("screener.batch_scorer.Scorer") as MockScorer, \
+             patch("screener.batch_scorer.time.sleep"), \
+             patch("data.twse_chips.get_t86_institutional") as mock_t86:
+            _setup_mocks(MockFetcher, MockScorer)
+            bs = BatchScorer(max_workers=1, as_of="2026-06-01")
+            bs.score_universe(["2330"], show_progress=False)
+        mock_t86.assert_not_called()
