@@ -6,7 +6,11 @@ tests/test_free_fallback.py
 import pandas as pd
 from unittest.mock import patch
 
-from data.free_fallback import augment_factors_with_free_sources
+from data.free_fallback import (
+    augment_factors_with_free_sources,
+    yf_revenue_yoy,
+    t86_foreign_net_series,
+)
 
 
 _EMPTY_FUND = {
@@ -99,3 +103,31 @@ class TestChipsTrigger:
                 current_price=100.0, institutional_df=_NONEMPTY,
                 revenue_df=_NONEMPTY, financial_df=_NONEMPTY)
         mock_t86.assert_not_called()
+
+
+class TestYfRevenueYoy:
+    def test_returns_percentage(self):
+        with patch("data.yf_fundamentals.get_yf_fundamentals",
+                   return_value={"revenue_growth": 0.153}):
+            assert yf_revenue_yoy("2330") == 15.3
+
+    def test_none_when_missing(self):
+        with patch("data.yf_fundamentals.get_yf_fundamentals", return_value={}):
+            assert yf_revenue_yoy("2330") is None
+
+
+class TestT86ForeignNetSeries:
+    def test_builds_foreign_daily_series(self):
+        df = pd.DataFrame([
+            {"date": "2026-07-23", "name": "外資", "net": 100},
+            {"date": "2026-07-24", "name": "外資", "net": 200},
+            {"date": "2026-07-24", "name": "投信", "net": 999},   # 非外資，應排除
+        ])
+        with patch("data.twse_chips.get_t86_institutional", return_value=df):
+            s = t86_foreign_net_series("2330")
+        assert list(s.values) == [100, 200]
+        assert s.tail(20).sum() == 300
+
+    def test_empty_when_no_data(self):
+        with patch("data.twse_chips.get_t86_institutional", return_value=pd.DataFrame()):
+            assert t86_foreign_net_series("2330").empty

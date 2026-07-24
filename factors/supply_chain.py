@@ -290,16 +290,25 @@ class SupplyChainAnalyzer:
 
         for stock_id in stocks[:4]:  # 限制查詢數量
             try:
-                # 月營收 YoY
+                # 月營收 YoY（FinMind 缺漏→免費 yfinance 營收成長備援）
                 rev_df = self.fetcher.get_monthly_revenue(stock_id, months=3)
+                rev_yoy = None
                 if rev_df is not None and not rev_df.empty and "revenue_yoy" in rev_df.columns:
                     yoy = rev_df["revenue_yoy"].dropna()
                     if not yoy.empty:
-                        rev_yoy_list.append(float(yoy.iloc[-1]))
+                        rev_yoy = float(yoy.iloc[-1])
+                if rev_yoy is None:
+                    from data.free_fallback import yf_revenue_yoy
+                    rev_yoy = yf_revenue_yoy(stock_id)
+                if rev_yoy is not None:
+                    rev_yoy_list.append(rev_yoy)
                 time.sleep(0.3)
 
-                # 外資 20 日淨買賣超
+                # 外資淨買賣超（FinMind 缺漏→免費證交所 T86 外資序列備援）
                 fi_series = self.fetcher.get_institutional_net(stock_id, days=25)
+                if fi_series is None or fi_series.empty:
+                    from data.free_fallback import t86_foreign_net_series
+                    fi_series = t86_foreign_net_series(stock_id)
                 if not fi_series.empty:
                     fi_net_list.append(float(fi_series.tail(20).sum()))
                 time.sleep(0.3)

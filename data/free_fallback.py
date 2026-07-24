@@ -79,6 +79,39 @@ def augment_chips_with_t86(stock_id: str, chips: dict, margin_df=None) -> dict:
     return chips
 
 
+def yf_revenue_yoy(stock_id: str):
+    """
+    FinMind 月營收缺漏時，用 yfinance revenue_growth 當最新營收 YoY（%）。
+    回傳 float（百分比）或 None。
+    """
+    try:
+        from data.yf_fundamentals import get_yf_fundamentals
+        yf = get_yf_fundamentals(stock_id)
+    except Exception:
+        return None
+    g = yf.get("revenue_growth") if yf else None
+    return round(g * 100, 2) if g is not None else None
+
+
+def t86_foreign_net_series(stock_id: str) -> pd.Series:
+    """
+    FinMind 三大法人缺漏時，用證交所 T86 組出「外資每日淨買賣超」序列。
+    供 SupplyChainAnalyzer 等以 pd.Series 消費的呼叫端使用。
+    抓不到回傳空 Series。
+    """
+    try:
+        from data.twse_chips import get_t86_institutional
+        inst = get_t86_institutional(stock_id)
+    except Exception:
+        return pd.Series(dtype=float)
+    if inst is None or inst.empty:
+        return pd.Series(dtype=float)
+    fi = inst[inst["name"] == "外資"]
+    if fi.empty:
+        return pd.Series(dtype=float)
+    return fi.groupby("date")["net"].sum().sort_index()
+
+
 def augment_factors_with_free_sources(
     stock_id: str,
     *,
