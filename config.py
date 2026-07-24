@@ -102,7 +102,10 @@ FILTER_EXCLUDE_ETF = True
 FILTER_MIN_REVENUE_YOY = -30.0
 
 SCREENER_QUICK_SCORE_THRESHOLD = int(_get_secret("SCREENER_QUICK_SCORE_THRESHOLD", "60"))
-SCREENER_MIN_RECOMMEND_SCORE = int(_get_secret("SCREENER_MIN_RECOMMEND_SCORE", "70"))
+# 推薦門檻：免費 FinMind 配額常用盡，批次評分抓不到財報/籌碼 → 分數被壓在
+# 60-66，設 70 會導致每日 0 推薦。降到 60 讓每日掃描選得出股票；有付費
+# FinMind（分數較完整）可用 secret/Variable SCREENER_MIN_RECOMMEND_SCORE 調高。
+SCREENER_MIN_RECOMMEND_SCORE = int(_get_secret("SCREENER_MIN_RECOMMEND_SCORE", "60"))
 
 # 大盤狀態閘門：大盤有系統性風險警訊時，當日推薦降級為觀察名單（設 "0" 停用）
 SCREENER_REGIME_FILTER = _get_secret("SCREENER_REGIME_FILTER", "1") == "1"

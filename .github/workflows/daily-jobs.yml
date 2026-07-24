@@ -48,6 +48,8 @@ jobs:
       # 候選池 40 支 ≈ 200 請求，避免 402/403 配額用盡。
       # 有 FinMind 付費方案可設 repo Variable SCREENER_UNIVERSE_SIZE 調高。
       SCREENER_UNIVERSE_SIZE: ${{ vars.SCREENER_UNIVERSE_SIZE || '40' }}
+      # 推薦門檻：免費資料下分數偏低，預設 60；有付費 FinMind 可調高
+      SCREENER_MIN_RECOMMEND_SCORE: ${{ vars.SCREENER_MIN_RECOMMEND_SCORE || '60' }}
     steps:
       - uses: actions/checkout@v5
 
