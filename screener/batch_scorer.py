@@ -133,6 +133,13 @@ class BatchScorer:
                 fundamental = compute_fundamental(revenue_df, financial_df, current_price)
                 momentum = compute_momentum(price_df)
 
+                # FinMind 財報缺漏（如 402 配額）→ 用免費 yfinance 補基本面，
+                # 避免基本面（45% 權重）全給中性分、拉低總分
+                if (revenue_df is None or revenue_df.empty) and \
+                   (financial_df is None or financial_df.empty):
+                    fundamental = self._augment_fundamental_yf(
+                        stock_id, fundamental, current_price)
+
                 result = self.scorer.score(chips, technical, fundamental, momentum)
 
                 time.sleep(BATCH_FETCH_DELAY_SEC)
@@ -161,3 +168,37 @@ class BatchScorer:
                     return {"stock_id": stock_id, "error": err_str, "total_score": None}
 
         return {"stock_id": stock_id, "error": "重試 3 次仍失敗（API 限流）", "total_score": None}
+
+    @staticmethod
+    def _augment_fundamental_yf(stock_id: str, fundamental: dict, current_price: float) -> dict:
+        """
+        FinMind 財報全缺（如免費配額 402/403）時，用免費 yfinance .info 補基本面。
+
+        只填「FinMind 沒給到、仍是預設 0」的欄位，避免蓋掉真實資料：
+            rev_yoy      ← revenue_growth × 100（小數→百分比）
+            gross_margin ← gross_margins × 100
+            pe_ratio     ← trailing_pe
+            eps_latest   ← trailing_eps
+
+        對應 models/scorer.py 的歸一化：gross_margin=0 只有 0.12 分、
+        pe_ratio=0 當虧損只有 0.25 分，補真值可把基本面（45% 權重）
+        從被壓低的狀態拉回合理區間，避免每日 0 推薦。
+        """
+        try:
+            from data.yf_fundamentals import get_yf_fundamentals
+            yf = get_yf_fundamentals(stock_id)
+        except Exception:
+            yf = {}
+        if not yf:
+            return fundamental
+
+        if yf.get("revenue_growth") is not None and not fundamental.get("rev_yoy"):
+            fundamental["rev_yoy"] = round(yf["revenue_growth"] * 100, 2)
+        if yf.get("gross_margins") is not None and not fundamental.get("gross_margin"):
+            fundamental["gross_margin"] = round(yf["gross_margins"] * 100, 2)
+        if yf.get("trailing_pe") is not None and not fundamental.get("pe_ratio"):
+            fundamental["pe_ratio"] = round(yf["trailing_pe"], 1)
+        if yf.get("trailing_eps") is not None and not fundamental.get("eps_latest"):
+            fundamental["eps_latest"] = round(yf["trailing_eps"], 2)
+
+        return fundamental
