@@ -8,6 +8,10 @@ import pandas as pd
 from unittest.mock import patch, MagicMock
 
 from screener.batch_scorer import BatchScorer
+from data.free_fallback import (
+    augment_fundamental_with_yf,
+    augment_chips_with_t86,
+)
 
 
 _MOCK_SCORE_RESULT = {
@@ -177,7 +181,7 @@ class TestAugmentFundamentalYf:
             "gross_margins": 0.53, "source_suffix": ".TW",
         }
         with patch("data.yf_fundamentals.get_yf_fundamentals", return_value=yf_data):
-            out = BatchScorer._augment_fundamental_yf("2330", dict(self._EMPTY_FUND), 850.0)
+            out = augment_fundamental_with_yf("2330", dict(self._EMPTY_FUND), 850.0)
         assert out["rev_yoy"] == pytest.approx(15.3)
         assert out["gross_margin"] == pytest.approx(53.0)
         assert out["pe_ratio"] == pytest.approx(18.5)
@@ -194,7 +198,7 @@ class TestAugmentFundamentalYf:
         existing = dict(self._EMPTY_FUND)
         existing.update({"rev_yoy": 12.0, "gross_margin": 45.0, "pe_ratio": 20.0, "eps_latest": 5.0})
         with patch("data.yf_fundamentals.get_yf_fundamentals", return_value=yf_data):
-            out = BatchScorer._augment_fundamental_yf("2330", existing, 100.0)
+            out = augment_fundamental_with_yf("2330", existing, 100.0)
         assert out["rev_yoy"] == 12.0
         assert out["gross_margin"] == 45.0
         assert out["pe_ratio"] == 20.0
@@ -203,7 +207,7 @@ class TestAugmentFundamentalYf:
     def test_empty_yf_returns_unchanged(self):
         """yfinance 也抓不到時，原 dict 原樣返回。"""
         with patch("data.yf_fundamentals.get_yf_fundamentals", return_value={}):
-            out = BatchScorer._augment_fundamental_yf("9999", dict(self._EMPTY_FUND), 50.0)
+            out = augment_fundamental_with_yf("9999", dict(self._EMPTY_FUND), 50.0)
         assert out == self._EMPTY_FUND
 
 
@@ -233,7 +237,7 @@ class TestAugmentChipsT86:
         chips = dict(self._EMPTY_CHIPS)
         chips["margin_chg_5d"] = 3.3   # 模擬既有融資欄，不應被覆蓋
         with patch("data.twse_chips.get_t86_institutional", return_value=self._t86_df()):
-            out = BatchScorer._augment_chips_t86("2330", chips, pd.DataFrame())
+            out = augment_chips_with_t86("2330", chips, pd.DataFrame())
         assert out["fi_5d_net"] == pytest.approx(1_800_000)   # 兩日外資加總
         assert out["it_5d_net"] == pytest.approx(350_000)
         assert out["dealer_5d_net"] == pytest.approx(-80_000)
@@ -243,13 +247,13 @@ class TestAugmentChipsT86:
     def test_empty_t86_returns_unchanged(self):
         """T86 抓不到（假日/該股無資料）→ 原 chips 原樣返回。"""
         with patch("data.twse_chips.get_t86_institutional", return_value=pd.DataFrame()):
-            out = BatchScorer._augment_chips_t86("9999", dict(self._EMPTY_CHIPS), pd.DataFrame())
+            out = augment_chips_with_t86("9999", dict(self._EMPTY_CHIPS), pd.DataFrame())
         assert out == self._EMPTY_CHIPS
 
     def test_t86_exception_returns_unchanged(self):
         """T86 抓取拋例外時不應中斷評分，原 chips 原樣返回。"""
         with patch("data.twse_chips.get_t86_institutional", side_effect=RuntimeError("boom")):
-            out = BatchScorer._augment_chips_t86("2330", dict(self._EMPTY_CHIPS), pd.DataFrame())
+            out = augment_chips_with_t86("2330", dict(self._EMPTY_CHIPS), pd.DataFrame())
         assert out == self._EMPTY_CHIPS
 
     def test_not_triggered_when_as_of_set(self):

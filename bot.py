@@ -8,6 +8,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 from data.fetcher import FinMindFetcher
+from data.free_fallback import augment_factors_with_free_sources
 from factors import compute_chips, compute_technical, compute_fundamental, compute_momentum
 from models.scorer import Scorer
 from config import FACTOR_WEIGHTS, ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN
@@ -76,6 +77,14 @@ def _run_analysis(stock_id: str, use_ai: bool) -> tuple:
     technical   = compute_technical(price_df)
     fundamental = compute_fundamental(revenue_df, financial_df, current_price)
     momentum    = compute_momentum(price_df)
+    # FinMind 配額用盡時，用免費 yfinance/T86 補基本面與籌碼，
+    # 讓 /analyze 與每日掃描對同一支股票算出一致的分數。
+    chips, fundamental = augment_factors_with_free_sources(
+        stock_id,
+        chips=chips, fundamental=fundamental, current_price=current_price,
+        institutional_df=institutional_df, revenue_df=revenue_df,
+        financial_df=financial_df, margin_df=margin_df,
+    )
 
     result = Scorer(FACTOR_WEIGHTS).score(chips, technical, fundamental, momentum)
 

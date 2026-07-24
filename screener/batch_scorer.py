@@ -14,6 +14,7 @@ from datetime import datetime
 import pandas as pd
 
 from data.fetcher import FinMindFetcher
+from data.free_fallback import augment_factors_with_free_sources
 from factors import compute_chips, compute_technical, compute_fundamental, compute_momentum
 from models.scorer import Scorer
 from config import FACTOR_WEIGHTS, BATCH_FETCH_DELAY_SEC, BATCH_MAX_WORKERS
@@ -133,17 +134,16 @@ class BatchScorer:
                 fundamental = compute_fundamental(revenue_df, financial_df, current_price)
                 momentum = compute_momentum(price_df)
 
-                # FinMind 財報缺漏（如 402 配額）→ 用免費 yfinance 補基本面，
-                # 避免基本面（45% 權重）全給中性分、拉低總分
-                if (revenue_df is None or revenue_df.empty) and \
-                   (financial_df is None or financial_df.empty):
-                    fundamental = self._augment_fundamental_yf(
-                        stock_id, fundamental, current_price)
-
-                # FinMind 三大法人缺漏 → 用免費證交所 T86 補籌碼（20% 權重）。
-                # 僅即時掃描（as_of 為 None）可用；歷史回溯用 T86 會抓到未來資料。
-                if (institutional_df is None or institutional_df.empty) and self.as_of is None:
-                    chips = self._augment_chips_t86(stock_id, chips, margin_df)
+                # FinMind 配額用盡（402/403）→ 用免費資料補基本面（yfinance）與
+                # 籌碼（證交所 T86），避免 45%/20% 權重全給中性/懲罰分、拉低總分。
+                # 歷史回溯（as_of 有值）不用 T86，避免抓到未來資料。
+                chips, fundamental = augment_factors_with_free_sources(
+                    stock_id,
+                    chips=chips, fundamental=fundamental, current_price=current_price,
+                    institutional_df=institutional_df, revenue_df=revenue_df,
+                    financial_df=financial_df, margin_df=margin_df,
+                    allow_t86=(self.as_of is None),
+                )
 
                 result = self.scorer.score(chips, technical, fundamental, momentum)
 
@@ -173,61 +173,3 @@ class BatchScorer:
                     return {"stock_id": stock_id, "error": err_str, "total_score": None}
 
         return {"stock_id": stock_id, "error": "重試 3 次仍失敗（API 限流）", "total_score": None}
-
-    @staticmethod
-    def _augment_fundamental_yf(stock_id: str, fundamental: dict, current_price: float) -> dict:
-        """
-        FinMind 財報全缺（如免費配額 402/403）時，用免費 yfinance .info 補基本面。
-
-        只填「FinMind 沒給到、仍是預設 0」的欄位，避免蓋掉真實資料：
-            rev_yoy      ← revenue_growth × 100（小數→百分比）
-            gross_margin ← gross_margins × 100
-            pe_ratio     ← trailing_pe
-            eps_latest   ← trailing_eps
-
-        對應 models/scorer.py 的歸一化：gross_margin=0 只有 0.12 分、
-        pe_ratio=0 當虧損只有 0.25 分，補真值可把基本面（45% 權重）
-        從被壓低的狀態拉回合理區間，避免每日 0 推薦。
-        """
-        try:
-            from data.yf_fundamentals import get_yf_fundamentals
-            yf = get_yf_fundamentals(stock_id)
-        except Exception:
-            yf = {}
-        if not yf:
-            return fundamental
-
-        if yf.get("revenue_growth") is not None and not fundamental.get("rev_yoy"):
-            fundamental["rev_yoy"] = round(yf["revenue_growth"] * 100, 2)
-        if yf.get("gross_margins") is not None and not fundamental.get("gross_margin"):
-            fundamental["gross_margin"] = round(yf["gross_margins"] * 100, 2)
-        if yf.get("trailing_pe") is not None and not fundamental.get("pe_ratio"):
-            fundamental["pe_ratio"] = round(yf["trailing_pe"], 1)
-        if yf.get("trailing_eps") is not None and not fundamental.get("eps_latest"):
-            fundamental["eps_latest"] = round(yf["trailing_eps"], 2)
-
-        return fundamental
-
-    @staticmethod
-    def _augment_chips_t86(stock_id: str, chips: dict, margin_df) -> dict:
-        """
-        FinMind 三大法人全缺時，用免費證交所 T86 補籌碼面。
-
-        只覆蓋「法人相關」欄位（外資/投信/自營商），保留原融資融券欄位。
-        T86 抓不到（假日/該股無資料/網路失敗）→ 原 chips 原樣返回。
-        """
-        try:
-            from data.twse_chips import get_t86_institutional
-            inst = get_t86_institutional(stock_id)
-        except Exception:
-            inst = None
-        if inst is None or inst.empty:
-            return chips
-
-        t86 = compute_chips(inst, pd.DataFrame())
-        inst_keys = ["fi_5d_net", "fi_20d_net", "fi_consecutive", "fi_trend",
-                     "it_5d_net", "it_20d_net", "it_consecutive", "dealer_5d_net"]
-        for k in inst_keys:
-            if t86.get(k):
-                chips[k] = t86[k]
-        return chips
