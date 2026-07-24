@@ -19,7 +19,7 @@ on:
       job:
         description: "要執行的任務"
         type: choice
-        options: [scan, risk, backfill, backfill-history, report-export, morning-report, all]
+        options: [scan, risk, backfill, track-daily, backfill-history, report-export, morning-report, all]
         default: all
       start_date:
         description: "backfill-history 起始日（YYYY-MM-DD）"
@@ -75,6 +75,11 @@ jobs:
         # always()：即使掃描步驟失敗，仍執行風險警訊，避免連帶被跳過
         if: ${{ always() && (github.event.schedule == '0 9 * * 1-5' || inputs.job == 'risk' || inputs.job == 'all') }}
         run: python jobs.py risk
+
+      # ── 平日 17:00（掃描後）：更新兩個月推薦名單每日績效曲線 ──────────
+      - name: Daily performance tracking
+        if: ${{ always() && (github.event.schedule == '0 9 * * 1-5' || inputs.job == 'track-daily' || inputs.job == 'all') }}
+        run: python jobs.py track-daily
 
       # ── 週一 09:00：績效回填 ─────────────────────────────────────
       - name: Performance backfill
