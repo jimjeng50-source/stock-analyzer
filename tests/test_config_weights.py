@@ -40,3 +40,15 @@ def test_invalid_json_falls_back(tmp_path, monkeypatch):
     with open(path, "w", encoding="utf-8") as f:
         f.write("{ not json")
     assert config.get_active_factor_weights() == config.FACTOR_WEIGHTS
+
+
+def test_get_weights_meta(tmp_path, monkeypatch):
+    path = str(tmp_path / "weights.json")
+    monkeypatch.setattr(config, "WEIGHTS_STORE_PATH", path)
+    assert config.get_weights_meta() == {}          # 無檔
+    config.save_factor_weights(config.FACTOR_WEIGHTS,
+                               {"updated_at": "2026-07-27", "win_rate_60d": 0.62, "samples": 30})
+    meta = config.get_weights_meta()
+    assert meta["updated_at"] == "2026-07-27"
+    assert meta["win_rate_60d"] == 0.62
+    assert meta["samples"] == 30

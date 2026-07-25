@@ -111,10 +111,147 @@ with st.sidebar:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 頁籤
 # ═══════════════════════════════════════════════════════════════════════════════
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab11, tab10 = st.tabs([
+tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab11, tab10 = st.tabs([
+    "🧭 綜合儀表板",
     "📊 個股分析", "🌐 總體資金面", "📈 回測驗證", "📚 因子說明", "🛡️ 風險監控",
     "🎯 Forward EPS", "🔗 產業鏈分析", "📅 月營收追蹤", "🏆 每日推薦", "🧺 候選池分析", "⚙️ 設定",
 ])
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Tab 0：綜合儀表板（整合最新推薦、兩個月績效、調參狀態、GitHub 報告）
+# ───────────────────────────────────────────────────────────────────────────────
+with tab0:
+    st.markdown("## 🧭 綜合儀表板")
+    st.caption("Telegram、Streamlit、GitHub 看到的是同一份資料（推薦 DB / weights.json / reports）。")
+
+    import os as _os
+    from datetime import datetime as _dt, date as _dtdate
+    import pandas as _pd
+    from screener.recommendation_db import RecommendationDB as _RDB
+    from screener.recommender import DailyRecommender as _DR
+    from config import (get_active_factor_weights as _gafw, FACTOR_WEIGHTS as _FW,
+                        get_weights_meta as _gwm)
+    from screener.weight_tuner import TARGET_WIN_RATE as _TGT
+
+    _ZH = {"fundamental": "基本面", "chips": "籌碼", "risk": "風險",
+           "technical": "技術", "momentum": "動能"}
+    _ORDER = ["fundamental", "chips", "risk", "technical", "momentum"]
+
+    try:
+        _db = _RDB()
+    except Exception as _e:
+        _db = None
+        st.warning(f"讀取推薦資料庫失敗：{_e}")
+
+    # ── 區塊 1：推薦邏輯狀態（權重 + 勝率 vs 目標）────────────────────────────
+    st.markdown("### ⚙️ 推薦邏輯狀態")
+    try:
+        _aw = _gafw()
+        _meta = _gwm()
+        _changed = any(abs(_aw[k] - _FW[k]) > 0.005 for k in _FW)
+        _perf = _db.get_performance_summary(n_days=180) if _db else {}
+        _wr = _meta.get("win_rate_60d")
+        if not isinstance(_wr, (int, float)):
+            _wr = _perf.get("win_rate_60d")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("目前權重狀態", "已調參" if _changed else "預設")
+        c2.metric("近期 60 日勝率",
+                  f"{_wr*100:.0f}%" if isinstance(_wr, (int, float)) else "—",
+                  delta=(f"{(_wr-_TGT)*100:+.0f} pp vs 目標" if isinstance(_wr, (int, float)) else None))
+        c3.metric("目標勝率", f"{_TGT*100:.0f}%")
+        _wdf = _pd.DataFrame({
+            "因子": [_ZH[k] for k in _ORDER],
+            "目前權重": [round(_aw[k], 3) for k in _ORDER],
+            "預設權重": [round(_FW[k], 3) for k in _ORDER],
+        })
+        st.dataframe(_wdf, use_container_width=True, hide_index=True)
+        if _meta.get("updated_at"):
+            st.caption(f"權重最後調整：{_meta['updated_at']}"
+                       f"（樣本 {_meta.get('samples', '—')} 筆）")
+        else:
+            st.caption("尚未進行週度調參，使用預設權重（需累積約 2 個月、≥12 筆已評估推薦才會調整）。")
+    except Exception as _e:
+        st.warning(f"權重狀態載入失敗：{_e}")
+
+    # ── 區塊 2：最新推薦（含分數計算說明）──────────────────────────────────
+    st.markdown("### 🏆 最新推薦")
+    try:
+        _recent = _db.get_recent_recommendations(n_days=14) if _db else _pd.DataFrame()
+        if _recent is not None and not _recent.empty:
+            _latest = _recent["recommend_date"].max()
+            _today = _recent[_recent["recommend_date"] == _latest].sort_values("rank")
+            st.caption(f"推薦日期：{_latest}　共 {len(_today)} 支")
+            _medal = {1: "🥇", 2: "🥈", 3: "🥉"}
+            for _, _r in _today.iterrows():
+                _sb = {k: _r.get(k) for k in
+                       ("fundamental_score", "chips_score", "risk_score",
+                        "technical_score", "momentum_score")}
+                _sid = _r.get("stock_id", "")
+                _nm = _r.get("stock_name", _sid)
+                _sc = _r.get("total_score") or 0
+                _pr = _r.get("current_price") or 0
+                _tp = _r.get("target_price")
+                _up = _r.get("upside_pct")
+                _tp_s = f"　🎯 目標 {_tp:,.0f}（{_up:+.0f}%）" if (_tp and _up is not None and _tp == _tp) else ""
+                st.markdown(f"**{_medal.get(int(_r.get('rank', 0)), '#'+str(int(_r.get('rank', 0))))} "
+                            f"{_sid} {_nm}**　評分 {_sc:.0f}/100　現價 {_pr:,.0f}{_tp_s}")
+                st.caption(_DR._format_score_explain(_sb))
+        else:
+            st.info("資料庫尚無推薦紀錄（可在「🏆 每日推薦」分頁手動掃描，或等排程產出）。")
+    except Exception as _e:
+        st.warning(f"最新推薦載入失敗：{_e}")
+
+    # ── 區塊 3：兩個月推薦績效追蹤（互動）──────────────────────────────────
+    st.markdown("### 📅 兩個月推薦績效追蹤")
+    try:
+        _sum = _db.get_tracking_summary(window_days=60) if _db else _pd.DataFrame()
+        if _sum is not None and not _sum.empty:
+            _disp = _sum.copy()
+            _disp["最新報酬%"] = _disp["last_return_pct"].round(1)
+            _disp["期間最佳%"] = _disp["max_return_pct"].round(1)
+            _disp["期間最差%"] = _disp["min_return_pct"].round(1)
+            _tbl = _disp.rename(columns={
+                "recommend_date": "推薦日", "stock_id": "代號", "stock_name": "名稱",
+                "entry_price": "買進價", "last_close": "最新價", "days_tracked": "追蹤天數",
+            })[["推薦日", "代號", "名稱", "買進價", "最新價", "最新報酬%",
+                "期間最佳%", "期間最差%", "追蹤天數"]]
+            st.dataframe(_tbl, use_container_width=True, hide_index=True)
+
+            _disp["_label"] = (_disp["recommend_date"].astype(str) + "　" +
+                               _disp["stock_id"].astype(str) + " " +
+                               _disp["stock_name"].fillna("").astype(str))
+            _pick = st.selectbox("選一檔看每日報酬曲線", _disp["_label"].tolist())
+            _row = _disp[_disp["_label"] == _pick].iloc[0]
+            _curve = _db.get_daily_returns(_row["recommend_date"], _row["stock_id"])
+            if _curve is not None and not _curve.empty:
+                _c = _curve.copy()
+                _c["as_of_date"] = _c["as_of_date"].astype(str)
+                st.line_chart(_c.set_index("as_of_date")["return_pct"],
+                              use_container_width=True)
+                st.caption("縱軸＝相對推薦日買進價的累積報酬（%）")
+            else:
+                st.info("這檔尚無每日曲線資料（track-daily job 產出後會出現）。")
+        else:
+            st.info("尚無兩個月追蹤資料（排程 track-daily 產出後會出現）。")
+    except Exception as _e:
+        st.warning(f"兩個月追蹤載入失敗：{_e}")
+
+    # ── 區塊 4：GitHub 產出報告（直接渲染 repo 內 commit 的報告）────────────
+    st.markdown("### 📄 GitHub 產出報告")
+    st.caption("由 GitHub Actions 排程產出並 commit 回 repo，Streamlit 重新部署時同步。")
+    for _path, _title in [("reports/tracking_2m.md", "兩個月績效追蹤"),
+                          ("reports/accuracy_summary.md", "推薦正確率報告")]:
+        if _os.path.exists(_path):
+            try:
+                _mt = _dt.fromtimestamp(_os.path.getmtime(_path))
+                with st.expander(f"📑 {_title}（檔案更新：{_mt:%Y-%m-%d %H:%M}）"):
+                    with open(_path, "r", encoding="utf-8") as _f:
+                        st.markdown(_f.read())
+            except Exception as _e:
+                st.caption(f"{_title} 讀取失敗：{_e}")
+        else:
+            st.caption(f"（{_title} 尚未產出）")
 
 
 # ───────────────────────────────────────────────────────────────────────────────
@@ -1895,6 +2032,7 @@ with tab9:
     st.markdown("由量化模型掃描全市場，多維篩選後精選高分個股。")
 
     from screener.recommendation_db import RecommendationDB
+    from screener.recommender import DailyRecommender as _DR9
     from datetime import date as _date
     import pandas as pd
 
@@ -1976,6 +2114,11 @@ with tab9:
             else:
                 hot_str = str(hot_raw) if hot_raw else ""
 
+            _sb9 = {k: rec.get(k) for k in
+                    ("fundamental_score", "chips_score", "risk_score",
+                     "technical_score", "momentum_score")}
+            score_expl = _DR9._format_score_explain(_sb9)
+
             medal = medal_map.get(rank, f"#{rank}")
             score_color = "#6bcb77" if score >= 75 else ("#ffd166" if score >= 60 else "#ff4b4b")
             tp_str = f"NT${tp:,.0f}（{upside:+.0f}%）" if (tp and upside is not None) else "—"
@@ -2006,6 +2149,7 @@ with tab9:
   <div style="color:#8b949e;margin-bottom:8px">
     現價 NT${price:,.0f}　|　目標價 {tp_str}　|　Forward EPS {feps_str}
   </div>
+  <div style="color:#8b949e;margin:4px 0;font-size:0.82em">{score_expl}</div>
   {"<div style='color:#8b949e;margin:4px 0;font-size:0.9em'>" + sl_tp_str + "</div>" if sl_tp_str else ""}
   {hot_html}
   <div style="margin:6px 0">✅ {r1 or "—"}</div>
