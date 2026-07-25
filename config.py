@@ -105,6 +105,15 @@ def get_active_factor_weights() -> dict:
     return dict(FACTOR_WEIGHTS)
 
 
+def get_weights_meta() -> dict:
+    """讀取 data/weights.json 完整內容（含 updated_at/win_rate_60d 等 metadata）；無檔回 {}。"""
+    try:
+        with open(WEIGHTS_STORE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
 def save_factor_weights(weights: dict, meta: dict = None) -> None:
     """把調整後的因子權重寫入 data/weights.json（含調參當時的 metadata）。"""
     os.makedirs(os.path.dirname(WEIGHTS_STORE_PATH) or ".", exist_ok=True)

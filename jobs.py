@@ -438,6 +438,55 @@ def job_morning_report() -> int:
     except Exception as e:
         logger.warning("熱門候選池區塊產生失敗（略過）：%s", e)
 
+    def _ok(v):
+        return v is not None and v == v      # 濾掉 None 與 NaN
+
+    # ── 兩個月推薦名單績效追蹤（去重同股、取最近 20 檔）─────────────
+    try:
+        track = db.get_tracking_summary(window_days=60)
+        if track is not None and not track.empty:
+            t = (track.sort_values("recommend_date", ascending=False)
+                      .drop_duplicates(subset="stock_id", keep="first"))
+            n_total = len(t)
+            rets = [r for r in t["last_return_pct"].tolist() if _ok(r)]
+            lines += ["", f"📅 兩個月追蹤（{n_total} 檔）"]
+            if rets:
+                avg_ret = sum(rets) / len(rets)
+                win = sum(1 for r in rets if r > 0) / len(rets)
+                lines.append(f"　平均最新報酬 {avg_ret:+.1f}%｜勝率 {win*100:.0f}%")
+            for _, r in t.head(20).iterrows():
+                sid = r["stock_id"]
+                nm = r.get("stock_name") or sid
+                entry = r.get("entry_price")
+                last = r.get("last_close")
+                ret = r.get("last_return_pct")
+                entry_s = f"{entry:.0f}" if _ok(entry) else "—"
+                last_s = f"{last:.0f}" if _ok(last) else "—"
+                ret_s = f"{ret:+.1f}%" if _ok(ret) else "—"
+                lines.append(f"・{sid} {nm}｜買 {entry_s}→{last_s}（{ret_s}）")
+            if n_total > 20:
+                lines.append(f"　…完整 {n_total} 檔見 Streamlit 儀表板")
+    except Exception as e:
+        logger.warning("兩個月追蹤區塊產生失敗（略過）：%s", e)
+
+    # ── 推薦邏輯狀態：目前生效權重 + 近期勝率 vs 70% 目標 ──────────
+    try:
+        from config import get_active_factor_weights, FACTOR_WEIGHTS
+        from screener.weight_tuner import TARGET_WIN_RATE
+        aw = get_active_factor_weights()
+        changed = any(abs(aw[k] - FACTOR_WEIGHTS[k]) > 0.005 for k in FACTOR_WEIGHTS)
+        zh = {"fundamental": "基本面", "chips": "籌碼", "risk": "風險",
+              "technical": "技術", "momentum": "動能"}
+        wstr = "、".join(f"{zh[k]}{aw[k]*100:.0f}%"
+                         for k in ["fundamental", "chips", "risk", "technical", "momentum"])
+        wr60 = perf.get("win_rate_60d")
+        wr_s = f"{wr60*100:.0f}%" if isinstance(wr60, (int, float)) else "—"
+        lines += ["", "⚙️ 推薦邏輯狀態",
+                  f"　目前權重{'（已調參）' if changed else '（預設）'}：{wstr}",
+                  f"　近期 60 日勝率 {wr_s}（目標 {TARGET_WIN_RATE*100:.0f}%）"]
+    except Exception as e:
+        logger.warning("權重狀態區塊產生失敗（略過）：%s", e)
+
     lines += ["", "⚠️ 僅供研究參考，不構成投資建議。投資有風險，請自行評估。"]
 
     ok = Notifier().send_telegram("\n".join(lines))
