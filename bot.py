@@ -146,6 +146,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 *指令*\n"
         "/analyze 2330 — 完整分析 + AI 建議\n"
         "/quick 2330 — 快速評分（不含 AI）\n"
+        "/flow 2330 — 盤中即時資金流與進場訊號\n"
         "/help — 使用說明",
         parse_mode="Markdown",
     )
@@ -165,6 +166,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "*/chain ai\\_server* → AI 伺服器供應鏈\n"
         "*/chain ev\\_components* → 電動車零組件\n"
         "*/revenue* → 本週即將公布月營收個股\n\n"
+        "━━━ 盤中即時 ━━━\n"
+        "*/flow 代號* → 即時資金流 + 小波段進場訊號（取樣約 30 秒）\n\n"
         "━━━ 每日推薦 ━━━\n"
         "*/recommend* → 今日精選股票推薦\n"
         "*/recommend refresh* → 立即重新掃描全市場\n"
@@ -189,6 +192,41 @@ async def cmd_quick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("用法：`/quick 2330`", parse_mode="Markdown")
         return
     await _analyze(update, context.args[0], use_ai=False)
+
+
+async def cmd_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/flow 2330 — 盤中即時資金流與小波段進場訊號"""
+    if not context.args:
+        await update.message.reply_text(
+            "用法：`/flow 2330`\n"
+            "會連續取樣約 30 秒的即時報價，推估主動買賣資金流並評估進場點。",
+            parse_mode="Markdown")
+        return
+
+    stock_id = str(context.args[0]).strip()
+    from data.realtime import is_trading_hours
+    hint = "" if is_trading_hours() else "（目前非交易時段，取到的是最後收盤快照）"
+    wait_msg = await update.message.reply_text(
+        f"⏳ 取樣 {stock_id} 即時資金流，約需 30 秒…{hint}")
+
+    try:
+        from alerts.intraday_monitor import analyze_now
+        from factors.entry_signal import format_entry_alert
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            _executor, lambda: analyze_now(stock_id, samples=6, interval=6.0))
+
+        summary = result["summary"]
+        if not summary.get("ready"):
+            await wait_msg.edit_text(
+                f"❌ 取不到 {stock_id} 的即時報價。請確認代號（上市/上櫃皆支援），"
+                "或稍後再試。")
+            return
+        await wait_msg.edit_text(format_entry_alert(result["signal"], summary))
+    except Exception as e:
+        logger.error(f"/flow 失敗：{e}")
+        await wait_msg.edit_text(f"❌ 即時資金流查詢失敗：{e}")
 
 
 # ── v3 新增指令 ────────────────────────────────────────────────────────────────
@@ -538,6 +576,7 @@ def main():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("analyze", cmd_analyze))
     app.add_handler(CommandHandler("quick", cmd_quick))
+    app.add_handler(CommandHandler("flow", cmd_flow))
     # v3 新增指令
     app.add_handler(CommandHandler("revenue", cmd_revenue))
     app.add_handler(CommandHandler("chain", cmd_chain))

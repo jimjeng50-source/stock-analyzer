@@ -111,8 +111,9 @@ with st.sidebar:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 頁籤
 # ═══════════════════════════════════════════════════════════════════════════════
-tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab11, tab10 = st.tabs([
-    "🧭 綜合儀表板",
+(tab0, tab12, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab11,
+ tab10) = st.tabs([
+    "🧭 綜合儀表板", "⚡ 即時資金流",
     "📊 個股分析", "🌐 總體資金面", "📈 回測驗證", "📚 因子說明", "🛡️ 風險監控",
     "🎯 Forward EPS", "🔗 產業鏈分析", "📅 月營收追蹤", "🏆 每日推薦", "🧺 候選池分析", "⚙️ 設定",
 ])
@@ -2722,3 +2723,244 @@ with tab11:
 
         st.markdown("---")
         st.caption("⚠️ 本分析由量化模型自動產出，僅供學習與研究參考，不構成任何投資建議。")
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Tab 12：即時資金流（盤中動態圖 + 小波段進場訊號）
+# ───────────────────────────────────────────────────────────────────────────────
+with tab12:
+    import time as _time
+    from plotly.subplots import make_subplots as _make_subplots
+
+    from data.realtime import (fetch_quotes as _fetch_quotes,
+                               is_trading_hours as _is_trading_hours)
+    from factors.intraday_flow import FlowTracker as _FlowTracker
+    from factors.entry_signal import evaluate_entry as _evaluate_entry
+    from alerts.intraday_monitor import build_daily_context as _build_daily_ctx
+
+    st.markdown("## ⚡ 即時資金流")
+    st.caption("資料源：證交所 MIS 盤中即時行情（免費、免 Token，約 5 秒更新）。"
+               "資金流＝相鄰快照的成交量差 × 成交價相對前一檔買賣價的位置，"
+               "推估主動買（外盤）／主動賣（內盤）。")
+
+    if not _is_trading_hours():
+        st.info("目前非台股交易時段（平日 09:00–13:30）。"
+                "現在查詢會拿到最後一個交易日的收盤快照，累積量不再變動 —— "
+                "資金流曲線會呈水平，屬正常現象。")
+
+    _c1, _c2, _c3, _c4 = st.columns([2, 1, 1, 1])
+    with _c1:
+        _rt_query = st.text_input("監看代號", value=stock_id or "2330",
+                                  max_chars=10, key="rt_stock").strip()
+    with _c2:
+        _rt_interval = st.selectbox("更新間隔", [10, 15, 30, 60], index=1,
+                                    key="rt_interval", format_func=lambda v: f"{v} 秒")
+    with _c3:
+        _rt_auto = st.checkbox("自動更新", value=False, key="rt_auto")
+    with _c4:
+        st.write("")
+        if st.button("🧹 重置序列", use_container_width=True, key="rt_reset"):
+            st.session_state.pop("rt_trackers", None)
+            st.session_state.pop("rt_ctx", None)
+
+    if "rt_trackers" not in st.session_state:
+        st.session_state["rt_trackers"] = {}
+    if "rt_ctx" not in st.session_state:
+        st.session_state["rt_ctx"] = {}
+
+    def _rt_tracker(sid: str):
+        book = st.session_state["rt_trackers"]
+        if sid not in book:
+            book[sid] = _FlowTracker(sid)
+        return book[sid]
+
+    def _rt_context(sid: str) -> dict:
+        cache = st.session_state["rt_ctx"]
+        if sid not in cache:
+            with st.spinner("取得日線背景（均量／法人籌碼／MA20）…"):
+                cache[sid] = _build_daily_ctx(sid)
+        return cache[sid]
+
+    def _render_realtime(sid: str) -> None:
+        """抓一次快照、更新序列並畫圖。fragment 與整頁 rerun 共用。"""
+        tracker = _rt_tracker(sid)
+        quote = _fetch_quotes([sid]).get(sid)
+        if quote is None:
+            st.error(f"取不到 {sid} 的即時報價。請確認代號正確（上市/上櫃皆支援），"
+                     "或稍後再試（MIS 在盤後維護時段可能無回應）。")
+            return
+        tracker.update(quote)
+
+        ctx = _rt_context(sid)
+        summary = tracker.summary(avg_volume_5d=ctx.get("avg_volume_5d"))
+        if not summary.get("ready"):
+            st.info("已取得第一筆快照，資金流至少需要兩筆才能計算，請稍候…")
+            return
+        signal = _evaluate_entry(summary, ctx)
+
+        # ── 訊號卡 ────────────────────────────────────────────────────────────
+        _score = signal["score"]
+        _color = ("#26a69a" if _score >= 75 else "#ffd93d" if _score >= 65
+                  else "#8892b0" if _score >= 50 else "#ef5350")
+        st.markdown(
+            f"### {summary['stock_id']} {summary.get('stock_name','')}　"
+            f"<span style='color:{_color}'>{_score:.0f} / 100</span>　"
+            f"{signal['label']}",
+            unsafe_allow_html=True,
+        )
+        st.caption(f"信心 {signal['confidence']}｜取樣 {summary['samples']} 筆"
+                   f"｜追蹤涵蓋當日成交量 {summary['coverage_ratio']:.0%}"
+                   f"｜最後撮合 {summary.get('trade_time','—')}")
+
+        _m = st.columns(6)
+        _m[0].metric("現價", f"{summary['price']:,.2f}",
+                     f"{summary['change_pct']:+.2f}%")
+        _m[1].metric("主動買賣淨額", f"{summary['net_amount']/1e8:+.2f} 億",
+                     f"{summary['flow_imbalance']:+.0%} 不平衡")
+        _m[2].metric("資金加速度", f"{summary['flow_accel']:.2f}×")
+        _m[3].metric("委買賣不平衡", f"{summary['obi_avg']:+.0%}")
+        _m[4].metric("VWAP", f"{summary['vwap']:,.2f}",
+                     f"{summary['price_vs_vwap']:+.2f}%")
+        _m[5].metric("量能倍率",
+                     f"{summary['vol_surge']:.2f}×" if summary.get("vol_surge") else "—",
+                     f"累積 {summary['cum_volume']:,} 張")
+
+        # ── 動態圖 ────────────────────────────────────────────────────────────
+        df = tracker.to_dataframe()
+        if len(df) >= 2:
+            fig = _make_subplots(
+                rows=3, cols=1, shared_xaxes=True,
+                row_heights=[0.42, 0.33, 0.25], vertical_spacing=0.05,
+                subplot_titles=("累計主動買賣淨額（億元）", "股價 vs 當日均價 VWAP",
+                                "每次取樣的淨流入（萬元）"),
+            )
+            _cum = df["cum_net_amount"] / 1e8
+            fig.add_trace(go.Scatter(
+                x=df["ts"], y=_cum, name="累計淨流入", mode="lines",
+                line=dict(color="#26a69a", width=2), fill="tozeroy",
+                fillcolor="rgba(38,166,154,0.20)",
+                hovertemplate="%{x|%H:%M:%S}<br>累計 %{y:+.2f} 億<extra></extra>",
+            ), row=1, col=1)
+            fig.add_hline(y=0, line=dict(color="#5a6478", width=1, dash="dot"),
+                          row=1, col=1)
+
+            fig.add_trace(go.Scatter(
+                x=df["ts"], y=df["price"], name="成交價", mode="lines",
+                line=dict(color="#ffd93d", width=2),
+                hovertemplate="%{x|%H:%M:%S}<br>價 %{y:,.2f}<extra></extra>",
+            ), row=2, col=1)
+            fig.add_trace(go.Scatter(
+                x=df["ts"], y=df["vwap"], name="VWAP", mode="lines",
+                line=dict(color="#8892b0", width=1.5, dash="dash"),
+                hovertemplate="%{x|%H:%M:%S}<br>VWAP %{y:,.2f}<extra></extra>",
+            ), row=2, col=1)
+
+            _bar = df["net_amount"] / 1e4
+            fig.add_trace(go.Bar(
+                x=df["ts"], y=_bar, name="區間淨流入",
+                marker_color=["#26a69a" if v >= 0 else "#ef5350" for v in _bar],
+                hovertemplate="%{x|%H:%M:%S}<br>%{y:+,.0f} 萬<extra></extra>",
+            ), row=3, col=1)
+
+            fig.update_layout(
+                height=640, template="plotly_dark", bargap=0.1,
+                margin=dict(l=10, r=10, t=48, b=10),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+                hovermode="x unified",
+            )
+            fig.update_yaxes(title_text="億元", row=1, col=1)
+            fig.update_yaxes(title_text="元", row=2, col=1)
+            fig.update_yaxes(title_text="萬元", row=3, col=1)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("序列樣本不足，圖表需要至少兩筆快照。")
+
+        # ── 訊號拆解 ──────────────────────────────────────────────────────────
+        st.markdown("#### 📌 進場訊號拆解")
+        _rows = [{
+            "子訊號": c["label"],
+            "分數": round(c["score"], 1),
+            "權重": f"{c['weight']:.0%}",
+            "貢獻": round(c["score"] * c["weight"], 1),
+            "說明": c["note"],
+        } for c in signal["components"].values()]
+        st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+
+        if signal["vetoes"]:
+            st.error("⛔ 否決條件（不建議進場）：\n" +
+                     "\n".join(f"- {v}" for v in signal["vetoes"]))
+        if signal["warnings"]:
+            st.warning("⚠️ 注意：\n" + "\n".join(f"- {w}" for w in signal["warnings"]))
+
+        _plan = signal.get("trade_plan")
+        if _plan:
+            st.markdown("#### 🎯 小波段操作參考")
+            _p = st.columns(5)
+            _p[0].metric("進場帶",
+                         f"{_plan['entry_low']:,.2f}–{_plan['entry_high']:,.2f}")
+            _p[1].metric("停損", f"{_plan['stop_loss']:,.2f}",
+                         f"-{_plan['risk_pct']:.1f}%")
+            _p[2].metric("停利 1 / 2",
+                         f"{_plan['target_1']:,.2f} / {_plan['target_2']:,.2f}")
+            _p[3].metric("盈虧比",
+                         f"{_plan['reward_risk']:.1f}" if _plan.get("reward_risk") else "—")
+            _p[4].metric("建議部位", _plan["position_hint"])
+            st.caption(f"時間停損：{_plan['time_stop']}")
+        else:
+            st.info("目前分數未達 65，不提供進場計畫 —— 不該進場的時候就不要規劃進場。")
+
+        st.caption("⚠️ 量化模型輸出，僅供學習研究參考，不構成投資建議。")
+
+    if not _rt_query:
+        st.info("請輸入要監看的股票代號。")
+    else:
+        _frag = getattr(st, "fragment", None) or getattr(st, "experimental_fragment", None)
+        if _rt_auto and _frag is not None:
+            # 只重跑這個片段，不動其他頁籤（Streamlit ≥ 1.33）
+            @_frag(run_every=f"{_rt_interval}s")
+            def _rt_fragment():
+                _render_realtime(_rt_query)
+            _rt_fragment()
+        else:
+            _render_realtime(_rt_query)
+            if _rt_auto:
+                # 舊版 Streamlit 無 fragment → 整頁重跑
+                _time.sleep(_rt_interval)
+                st.rerun()
+
+    with st.expander("ℹ️ 這張圖怎麼看／模型怎麼算"):
+        st.markdown("""
+**資金流怎麼推估**
+
+MIS 只提供「累積成交量」與「五檔委買賣」，沒有逐筆內外盤。本系統的作法：
+
+1. 相鄰兩次快照的累積量差 = 這段時間的成交張數。
+2. 用成交價相對「前一次快照」買一／賣一的位置判定主動方：
+   成交價 ≥ 前賣一 → 主動買（外盤）；≤ 前買一 → 主動賣（內盤）；中間則按比例拆分。
+3. 金額 = 張數 × 成交價 × 1000。
+
+因為是 5 秒一張快照，期間的來回單會互相抵銷，**絕對金額會低估**，
+但方向與加速度是可靠的 —— 而抓小波段進場點要的正是方向與時機。
+
+**進場模型的六個子訊號**
+
+| 子訊號 | 權重 | 為什麼重要 |
+|---|---|---|
+| 主動買賣力道 | 25% | 主力方向；買賣不平衡 ±10% 已算明顯 |
+| 資金流加速度 | 20% | 「剛開始流入」勝過「早上流完了」，>1× 代表正在加速 |
+| 委買委賣結構 | 15% | 五檔買盤厚 = 下檔有承接，回檔有人接 |
+| 量能倍率 | 15% | 對照 5 日均量的同時段應有量；沒量的漲留不住也出不掉 |
+| 日內價格位階 | 15% | 最佳帶在 45–85%，貼近當日最高會扣分（不追末端） |
+| 日線法人籌碼 | 10% | 日內熱度若和外資投信反向，小波段勝率明顯下降 |
+
+**否決條件**（不管其他分數多高，分數會被直接壓下來）
+
+- 資金淨流出且加速 → 上限 35 分
+- 跌破 VWAP 超過 1.5% → 上限 40 分
+- 漲停鎖死（追價買不到） → 上限 45 分
+- 當日成交量 < 500 張（流動性不足） → 上限 35 分
+- 跌停鎖死 → 上限 15 分
+
+**及時通知**：把清單設在 `INTRADAY_WATCHLIST`，執行 `python jobs.py intraday-watch`
+（或 GitHub Actions 的 Intraday Watch workflow），達門檻就推 Telegram。
+        """)

@@ -162,3 +162,43 @@ RECOMMENDATION_DB_PATH = "data/recommendations.db"
 
 SCREENER_SCHEDULE_HOUR = 17
 SCREENER_SCHEDULE_MINUTE = 30
+
+# ===== v6 盤中即時資金流監控 =====
+
+# 觀察清單（逗號分隔）。留空時 jobs.py intraday-watch 會退回使用
+# WATCHLIST_CUSTOM，再退回當日／最近一次的推薦名單。
+INTRADAY_WATCHLIST = _get_secret("INTRADAY_WATCHLIST", "")
+
+# 觸發 Telegram 推播的最低進場分數（0~100）
+INTRADAY_MIN_SCORE = int(_get_secret("INTRADAY_MIN_SCORE", "70"))
+# 同一檔推播後的冷卻分鐘數
+INTRADAY_COOLDOWN_MIN = int(_get_secret("INTRADAY_COOLDOWN_MIN", "30"))
+# 盤中輪詢間隔（秒）；MIS 約 5 秒更新一次，20~30 秒已足夠
+INTRADAY_POLL_INTERVAL = int(_get_secret("INTRADAY_POLL_INTERVAL", "30"))
+# 監控清單上限（一次 MIS 請求的頻道數有限，過多會拖慢輪詢）
+INTRADAY_MAX_WATCH = int(_get_secret("INTRADAY_MAX_WATCH", "15"))
+
+
+def get_intraday_watchlist() -> list:
+    """
+    盤中監控清單，依序：INTRADAY_WATCHLIST → WATCHLIST_CUSTOM → 最近推薦。
+    回傳去重後的代號列表（最多 INTRADAY_MAX_WATCH 檔）。
+    """
+    raw = get_runtime_config("INTRADAY_WATCHLIST") or get_runtime_config("WATCHLIST_CUSTOM")
+    ids = [s.strip() for s in str(raw or "").split(",") if s.strip()]
+
+    if not ids:
+        try:
+            from screener.recommendation_db import RecommendationDB
+            df = RecommendationDB().get_recent_recommendations(n_days=7)
+            if df is not None and not df.empty and "stock_id" in df.columns:
+                ids = [str(s).strip() for s in df["stock_id"].tolist() if str(s).strip()]
+        except Exception:
+            ids = []
+
+    seen, out = set(), []
+    for sid in ids:
+        if sid not in seen:
+            seen.add(sid)
+            out.append(sid)
+    return out[:INTRADAY_MAX_WATCH]
