@@ -57,6 +57,21 @@ def pe_df_3y():
     })
 
 
+@pytest.fixture(autouse=True)
+def no_yf_network():
+    """
+    ForwardEPSCalculator.calculate() 內部會呼叫 get_yf_fundamentals() 打 Yahoo
+    Finance 取基本面備援。沒有這個 fixture 時，測試結果會取決於「執行環境有沒有
+    網路、Yahoo 當下回不回得出資料」——本機（無外網）綠燈、CI（有外網）紅燈。
+
+    預設把備援關掉（回空 dict），讓每個測試只驗證自己 mock 進去的 FinMind 資料。
+    需要驗證 yfinance 備援本身的測試（TestYfinanceFallback）會在自己的
+    with patch(...) 裡覆寫這個回傳值。
+    """
+    with patch("data.yf_fundamentals.get_yf_fundamentals", return_value={}):
+        yield
+
+
 # ── 正常情境測試 ───────────────────────────────────────────────────────────────
 
 class TestForwardEPSCalculatorNormal:

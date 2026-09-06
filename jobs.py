@@ -494,9 +494,52 @@ def job_morning_report() -> int:
     return 0
 
 
+def job_intraday_watch(max_minutes: int = 0) -> int:
+    """
+    盤中即時資金流監控：輪詢觀察清單，達進場門檻立刻推 Telegram。
+
+    非交易時段（平日 09:00–13:30 以外）直接結束，不空轉。
+    max_minutes = 0 表示跑到收盤為止。
+    """
+    from config import (INTRADAY_COOLDOWN_MIN, INTRADAY_MIN_SCORE,
+                        INTRADAY_POLL_INTERVAL, get_intraday_watchlist)
+    from alerts.intraday_monitor import IntradayMonitor
+    from alerts.notifier import Notifier
+    from data.realtime import is_trading_hours
+
+    if not is_trading_hours():
+        logger.info("非台股交易時段（平日 09:00–13:30），盤中監控不啟動")
+        return 0
+
+    watchlist = get_intraday_watchlist()
+    if not watchlist:
+        logger.warning("盤中監控清單是空的 — 請設定 INTRADAY_WATCHLIST 或 "
+                       "WATCHLIST_CUSTOM，或先跑一次 scan 產生推薦名單。")
+        Notifier().send_telegram(
+            "⚠️ 盤中資金流監控沒有標的可看。\n"
+            "請在 Secrets/Variables 設定 INTRADAY_WATCHLIST（例：2330,2454,3231），"
+            "或先執行每日掃描產生推薦名單。")
+        return 0
+
+    monitor = IntradayMonitor(
+        watchlist,
+        min_score=INTRADAY_MIN_SCORE,
+        cooldown_minutes=INTRADAY_COOLDOWN_MIN,
+        poll_interval=INTRADAY_POLL_INTERVAL,
+    )
+    logger.info("盤中監控啟動：%s（門檻 %d 分）", ",".join(watchlist), INTRADAY_MIN_SCORE)
+    alerts = monitor.run(max_minutes=max_minutes or None)
+
+    entries = [a for a in alerts if a["type"] == "entry"]
+    logger.info("盤中監控結束：共推播 %d 則進場訊號、%d 則出場警示",
+                len(entries), len(alerts) - len(entries))
+    return 0
+
+
 JOBS = {"scan": job_scan, "risk": job_risk, "backfill": job_backfill,
         "track-daily": job_track_daily, "weekly-tune": job_weekly_tune,
-        "report-export": job_report_export, "morning-report": job_morning_report}
+        "report-export": job_report_export, "morning-report": job_morning_report,
+        "intraday-watch": job_intraday_watch}
 
 
 def main():
@@ -505,9 +548,13 @@ def main():
                         help="要執行的任務")
     parser.add_argument("--start", default="2026-06-01",
                         help="backfill-history 起始日（YYYY-MM-DD）")
+    parser.add_argument("--max-minutes", type=int, default=0,
+                        help="intraday-watch 最長執行分鐘數（0＝跑到收盤）")
     args = parser.parse_args()
     if args.job == "backfill-history":
         sys.exit(job_backfill_history(args.start))
+    if args.job == "intraday-watch":
+        sys.exit(job_intraday_watch(args.max_minutes))
     sys.exit(JOBS[args.job]())
 
 

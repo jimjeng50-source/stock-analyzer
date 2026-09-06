@@ -1,0 +1,87 @@
+# 盤中即時資金流監控：輪詢觀察清單，達進場門檻立刻推 Telegram。
+#
+# 時間換算：台股 09:00–13:30（台灣時間）= 01:00–05:30 UTC。
+# cron 觸發常延遲 5–30 分鐘，所以提早在 00:50 UTC 排程，
+# 由 jobs.py 自己判斷是否在交易時段（非盤中會直接結束，不空轉）。
+#
+# ⚠️ 這個 workflow 會連續執行約 4.5 小時。
+#    * 公開 repo：Actions 免費，無成本。
+#    * 私有 repo：會吃掉大量 Actions 分鐘數（每月免費額度 2000 分鐘，
+#      跑滿 22 個交易日約需 6000 分鐘）→ 建議改用 Render / 自己的機器跑
+#      `python jobs.py intraday-watch`（見 DEPLOY_BOT.md）。
+#
+# 因此預設是「關閉」的：要啟用請到
+#   Settings → Secrets and variables → Actions → Variables
+# 新增 INTRADAY_WATCH_ENABLED = 1
+#
+# 需要的 Secrets：TELEGRAM_BOT_TOKEN、TELEGRAM_CHAT_ID
+#                （FINMIND_TOKEN 選填，只用於日線均量／法人籌碼背景值）
+# 需要的 Variables：INTRADAY_WATCHLIST（例：2330,2454,3231）
+#                  留空則自動使用 WATCHLIST_CUSTOM 或最近 7 日的推薦名單
+
+name: Intraday Watch
+
+on:
+  schedule:
+    - cron: "50 0 * * 1-5"     # 平日 08:50 台灣時間啟動，等開盤
+  workflow_dispatch:
+    inputs:
+      max_minutes:
+        description: "最長執行分鐘數（0 = 跑到收盤）"
+        default: "0"
+        required: false
+
+concurrency:
+  group: intraday-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    # 09:00–13:30 共 270 分鐘，加上啟動與延遲的緩衝
+    timeout-minutes: 300
+    # 排程觸發時必須顯式啟用；手動觸發則一律執行
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      vars.INTRADAY_WATCH_ENABLED == '1'
+    env:
+      FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      INTRADAY_WATCHLIST: ${{ vars.INTRADAY_WATCHLIST }}
+      WATCHLIST_CUSTOM: ${{ vars.WATCHLIST_CUSTOM }}
+      INTRADAY_MIN_SCORE: ${{ vars.INTRADAY_MIN_SCORE || '70' }}
+      INTRADAY_COOLDOWN_MIN: ${{ vars.INTRADAY_COOLDOWN_MIN || '30' }}
+      INTRADAY_POLL_INTERVAL: ${{ vars.INTRADAY_POLL_INTERVAL || '30' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # 開盤前排程的話先等到 09:00（jobs.py 在非交易時段會直接結束）
+      - name: Wait for market open
+        run: |
+          python - <<'PY'
+          import time
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          tz = ZoneInfo("Asia/Taipei")
+          while True:
+              now = datetime.now(tz)
+              if now.hour >= 9 or now.hour < 5:
+                  break
+              print(f"目前 {now:%H:%M:%S}，等待 09:00 開盤…", flush=True)
+              time.sleep(60)
+          PY
+
+      - name: Intraday fund-flow watch
+        run: python jobs.py intraday-watch --max-minutes "${{ inputs.max_minutes || 0 }}"
