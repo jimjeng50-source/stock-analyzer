@@ -1,0 +1,46 @@
+# PR 測試把關：每次 PR 與推上 main 時跑完整 pytest。
+#
+# 原本 repo 只有排程類 workflow（daily-jobs / intraday-watch），
+# PR 上沒有任何自動檢查 → 壞掉的改動要等到隔天排程才會被發現。
+#
+# 測試全部以 mock 執行，不打 FinMind / 證交所 / Telegram，
+# 所以這個 workflow 不需要任何 secret。
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        # 測試不應依賴外部 API；若有人不小心寫了會打網路的測試，
+        # 這裡的空 token 會讓它走 fallback 而不是用到真實配額。
+        env:
+          FINMIND_TOKEN: ""
+          ANTHROPIC_API_KEY: ""
+          TELEGRAM_BOT_TOKEN: ""
+          TELEGRAM_CHAT_ID: ""
+        run: python -m pytest -q
